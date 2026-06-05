@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Search the third-party reference source under ref/ on purpose.
+# ref/ is gitignored + in .ignore, so normal `rg` / the Grep tool skip it; this
+# wrapper opts back in. All args are passed straight through to ripgrep.
+#
+#   tools/refgrep group_segments
+#   tools/refgrep -t py 'def.*ls=j' ref/copyparty
+exec rg --no-ignore -g 'ref/**' "$@"

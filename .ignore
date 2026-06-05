@@ -1,0 +1,5 @@
+# ripgrep-specific ignore layer (honored independently of .gitignore).
+# Belt-and-suspenders so `rg` skips reference source even when --no-ignore-vcs
+# is in play. To search references deliberately, use `tools/refgrep` or
+# `rg --no-ignore -g 'ref/**' PATTERN`.
+ref/
