@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust/core", "rust/bindgen"]
+members = ["rust/core", "rust/bindgen", "rust/mock-copyparty"]
 resolver = "2"
 
 [workspace.package]
