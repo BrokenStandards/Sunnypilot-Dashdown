@@ -13,7 +13,7 @@ This is the **overall architecture plan** that drives all future development. It
 > including the hard cases (app backgrounded/killed mid-download, interrupted transfer
 > resumed, device unreachable). No functionality is stubbed and carried forward.
 
-We should may clone sunnypilot and any other source we need for reference. We should also write tests using snipits that run real sunnypilot code/copypart server with fixtures for testing. Each phase should enter plan mode and create its own plan files. Each phase should make use of agents to research, verify code, run tests, debug, etc. After each milestone of each phase we should git commit. If we create branches, we should merge back into the main one at the end of the phase.  If an MCP needs to be developed, we should advise the developer to create it. For instance, we might want an MCPs for a UI to verify elements alighn correctly and assisting, or for finding relevent documentation/code from the parent codebase.
+Reference source (sunnypilot, copyparty, uniffi-rs, uniffi-starter) lives in a gitignored `ref/` dir — reconstructable via `tools/fetch-refs.sh`, searchable with `tools/refgrep`, and kept out of normal code searches (see `docs/REFERENCES.md`). We should also write tests using snipits that run real sunnypilot code/copypart server with fixtures for testing. Each phase should enter plan mode and create its own plan files. Each phase should make use of agents to research, verify code, run tests, debug, etc. After each milestone of each phase we should git commit. If we create branches, we should merge back into the main one at the end of the phase.  If an MCP needs to be developed, we should advise the developer to create it. For instance, we might want an MCPs for a UI to verify elements alighn correctly and assisting, or for finding relevent documentation/code from the parent codebase.
 
 ---
 
@@ -79,7 +79,7 @@ Comma devices running the Sunnypilot openpilot fork, where footage is served ove
                 │  db(rusqlite) · settings · connectivity · │
                 │  logging(tracing) · ffi(UniFFI facade)    │
                 └───────────────┬──────────────┬────────────┘
-            cargo-xcframework   │              │  cargo-ndk
+            xtool (Linux)       │              │  cargo-ndk
               MyCore.xcframework │              │  libcore.so
                     ┌───────────┴───┐     ┌─────┴──────────────┐
                     │  iOS (SwiftUI)│     │ Android (Compose)  │
@@ -97,9 +97,12 @@ Comma devices running the Sunnypilot openpilot fork, where footage is served ove
   iOS/Android system-sqlite linkage problems; our DB ops are tiny — async value of `sqlx`
   is marginal; run blocking calls via `spawn_blocking`.)
 - Logging: **tracing** + custom layer forwarding to native via a `LogSink` callback.
-- Builds: **cargo-ndk** (Android `.so`), **cargo-xcframework** (iOS `.xcframework`).
+- Builds: **cargo-ndk** (Android `.so`); **xtool** builds/signs the iOS `.xcframework` **on
+  Linux** (replaces cargo-xcframework, which needs macOS — Swift-on-Linux SDK setup recipe in
+  `docs/REFERENCES.md`).
 - Testing: **wiremock**/**proptest**/**mockall** (Rust), a standalone **mock-copyparty**
-  fixture server (axum), **XCUITest** (iOS), **Espresso** (Android), **Maestro** (cross).
+  fixture server (axum), **XCUITest** (iOS, run on Linux via xtool/Swift), **Espresso**
+  (Android), **Maestro** (cross).
   Use cargo commands for rust dependencies to install the latest versions.
 
 ---
@@ -127,9 +130,12 @@ sunnypilot-dashdown/
     mock-copyparty/           # reusable axum fixture server (also drives UI tests)
       src/main.rs; fixtures/  # single-drive, gap-split, partial trees
     bindgen/                  # uniffi_bindgen wrapper -> swift/ + kotlin/ bindings
-  ios/                        # Xcode project (SwiftUI) — built in Phase B
+  ios/                        # SwiftPM app (SwiftUI), built on Linux via xtool — Phase B
   android/                    # Gradle project (Compose) — built in Phase B
-  tools/                      # MCP config, Maestro flows, CI scripts
+  tools/                      # fetch-refs.sh, refgrep, Maestro flows, CI scripts
+  docs/                       # REFERENCES.md (reference manifest + iOS-on-Linux recipe)
+  ref/                        # gitignored third-party reference source (via fetch-refs.sh)
+  CLAUDE.md                   # repo working conventions
 ```
 
 ---
@@ -249,13 +255,19 @@ for playback, **EncryptedSharedPreferences/Keystore** for the password, progress
 
 ## MCPs & reliable UI testing
 
-**Existing MCPs to use:**
-- **GitHub MCP** (already connected) — PRs, CI status, review handling.
-- **XcodeBuildMCP** — build/run/test iOS, boot simulators, take screenshots, drive UI
-  (agentic iOS verification).
-- **mobile-mcp** (mobile-next) — cross-platform iOS + Android emulator/device UI automation
-  for agentic exploratory testing; complements native test suites. (If Android coverage is
-  thin, add an adb/android-mcp server alongside it.)
+**Phase A (Rust core) needs no MCP** — it's verified locally with `cargo test`, wiremock, and
+the in-repo `mock-copyparty` fixture. (The "doc-lookup MCP for the parent codebase" idea is
+replaced by the gitignored `ref/` dir + `tools/refgrep`.)
+
+**MCPs for later phases:**
+- **GitHub MCP** — PRs, CI status, review handling. Set up in Phase 0 as a header-token HTTP
+  server (`api.githubcopilot.com/mcp/`); GitHub's hosted MCP doesn't support OAuth/DCR, so it
+  authenticates via a `gh` token header. Repo `BrokenStandards/Sunnypilot-Dashdown` (private);
+  Claude GitHub Actions installed.
+- **~~XcodeBuildMCP~~ — N/A:** requires Xcode/macOS, incompatible with our iOS-on-Linux path.
+  Agentic iOS build/run/screenshot uses the **xtool** CLI + **libimobiledevice** (real device).
+- **mobile-mcp** (mobile-next) — Android emulator/device UI automation on Linux (its iOS path
+  needs a Mac/simulator, so it's Android-focused here); complements native test suites.
 
 **MCP we will develop:** a thin **`mock-comma-mcp`** wrapper around the `mock-copyparty`
 fixture server so the agent can, during automated UI runs, provision device fixtures, inject
@@ -269,8 +281,9 @@ underlying server is a plain binary reused by Rust integration tests too.) Built
   backend with known fixture trees (no real Comma needed).
 - **Native** layer: XCUITest (iOS) + Espresso (Android) keyed on accessibility IDs.
 - **Cross-platform** smoke/regression: **Maestro** YAML flows run on both in CI.
-- **Agentic**: XcodeBuildMCP / mobile-mcp let Claude launch, screenshot, and validate flows
-  end-to-end against the mock server, toggling connectivity to verify status dots.
+- **Agentic**: **xtool**/libimobiledevice (iOS) + **mobile-mcp** (Android) let Claude launch,
+  screenshot, and validate flows end-to-end against the mock server, toggling connectivity to
+  verify status dots.
 
 ---
 
@@ -296,10 +309,18 @@ underlying server is a plain binary reused by Rust integration tests too.) Built
 Each milestone below is **built and fully tested before the next starts**. Each will receive
 its own detailed plan when reached, with full scope as described.
 
+**Phase 0 — Environment bootstrap (done):** toolchain (Rust Android/iOS targets, cargo-ndk,
+NDK r27.3), reference source in gitignored `ref/` (copyparty / sunnypilot / uniffi-rs /
+uniffi-starter, pinned), repo conventions (`CLAUDE.md`, `.gitignore`/`.ignore`,
+`tools/fetch-refs.sh` + `refgrep`, `docs/REFERENCES.md`), GitHub repo + MCP. See
+`.claude/plans/Phase 0 — Environment Bootstrap & Reference Setup.md`.
+
 **Phase A — Rust core (sequential, test-first each step):**
 - **M0 Scaffolding** — workspace, `core` crate (`staticlib/cdylib/lib`), deps, CI
-  cross-compile for `aarch64-apple-ios(-sim)` + `aarch64/armv7-linux-android`, exported
-  `ping()`. *Test:* ping + bindgen runs green on all targets.
+  cross-compile for `aarch64-apple-ios(-sim)` + `aarch64-linux-android` /
+  `armv7-linux-androideabi` / `x86_64-linux-android` / `i686-linux-android`, exported `ping()`.
+  (iOS targets compile std on Linux; linking the `.xcframework` is via xtool's Swift SDK in
+  Phase B.) *Test:* ping + bindgen runs green on all targets.
 - **M1 copyparty client + model + db** — `?ls=j` listing/parse, streamed download, auth;
   schema + migrations + Repo; build the `mock-copyparty` fixture server. *Tests:* `it_listing`,
   time parse, migration.
@@ -320,18 +341,20 @@ its own detailed plan when reached, with full scope as described.
   Swift+Kotlin. *Tests:* end-to-end against mock-copyparty + per-platform load smoke.
 
 **Phase B — Native shells (parallel, after M8) — each builds & tests full background:**
-- **iOS:** Xcode project, integrate `.xcframework`, SwiftUI screens, ProgressSink/LogSink,
-  BGTask + background URLSession, AVPlayer, Keychain. XCUITest (including
-  background/suspend/kill → complete/resume) vs mock server.
+- **iOS:** SwiftPM app built on Linux via **xtool** (one-time `Xcode.xip` SDK extraction +
+  `libxadi` Apple-auth — see `docs/REFERENCES.md`), integrate `.xcframework`, SwiftUI screens,
+  ProgressSink/LogSink, BGTask + background URLSession, AVPlayer, Keychain. XCUITest/Swift
+  Testing (including background/suspend/kill → complete/resume) vs mock server.
 - **Android:** Gradle project, integrate `.so`, Compose screens, WorkManager + Foreground
   Service, Media3, Keystore. Espresso (including background/kill → complete/resume) vs mock
   server.
-- **Shared:** Maestro cross-platform flows; develop `mock-comma-mcp`; wire XcodeBuildMCP /
-  mobile-mcp agentic checks.
+- **Shared:** Maestro cross-platform flows; develop `mock-comma-mcp`; wire
+  xtool/libimobiledevice (iOS) + mobile-mcp (Android) agentic checks.
 
 **Phase C — Integration & CI:** GitHub Actions builds Rust for all targets, copies artifacts
-into Xcode/Gradle, runs `cargo test` + `xcodebuild test` + `./gradlew connectedAndroidTest`
-+ Maestro; release packaging.
+into the iOS (xtool/SwiftPM) and Android (Gradle) projects, runs `cargo test` + iOS tests +
+`./gradlew connectedAndroidTest` + Maestro; release packaging. **OPEN QUESTION (decide at
+Phase C):** run iOS build/test on a Linux runner via xtool, or a macOS runner via xcodebuild.
 
 ---
 
@@ -349,7 +372,8 @@ into Xcode/Gradle, runs `cargo test` + `xcodebuild test` + `./gradlew connectedA
 5. Background (per platform): start a drive download, background then kill the app, confirm it
    completes; interrupt mid-transfer and confirm it resumes only the missing files.
 6. Native: XCUITest + Espresso + Maestro flows pass against the mock server; agentic
-   screenshot verification via XcodeBuildMCP / mobile-mcp confirms the device-list dots,
-   drive grouping, partial/resume badge, and per-device settings render natively on each OS.
+   screenshot verification via xtool/libimobiledevice (iOS) and mobile-mcp (Android) confirms
+   the device-list dots, drive grouping, partial/resume badge, and per-device settings render
+   natively on each OS.
 7. copyparty DELETE: the M6 verification probe confirms the real endpoint, and auto-delete
    (behind the age/complete guards) is exercised against it.
