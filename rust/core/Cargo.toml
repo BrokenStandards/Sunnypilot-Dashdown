@@ -10,4 +10,20 @@ crate-type = ["cdylib", "staticlib", "lib"]
 
 [dependencies]
 uniffi = { workspace = true, features = ["tokio"] }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
+r2d2_sqlite = { version = "0.34.0", features = ["bundled"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+r2d2 = "0.8.10"
+thiserror = "2.0.18"
+tracing = "0.1.44"
+percent-encoding = "2.3.2"
+url = "2.5.8"
+rusqlite = { version = "0.39", features = ["bundled"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "stream"] }
+
+[dev-dependencies]
+mock-copyparty = { path = "../mock-copyparty" }
+tempfile = "3.27.0"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+wiremock = "0.6.5"

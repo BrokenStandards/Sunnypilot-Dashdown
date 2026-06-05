@@ -52,15 +52,22 @@ Comma devices running the Sunnypilot openpilot fork, where footage is served ove
 
 ## Domain facts (researched — treat as ground truth)
 
-- **copyparty API:** JSON dir listing `GET .../?ls=j` (returns dirs/files with `sz` size,
-  `ts`/`mt` mtime); per-folder archive `?zip` / `?tar`; auth via `?pw=<pw>` query or `PW:`
-  header. **HTTP Range / resumable download is NOT reliable** (copyparty issue #329) — so
-  resume is **file-granular** (re-fetch incomplete files whole), not byte-range. Username/passoword may be empty for anonymous access
-- **Comma dashcam storage:** segments under `/data/media/0/realdata/`. Route name =
-  `dongleid|YYYY-MM-DD--HH-MM-SS`. Segment dir = `dongleid|YYYY-MM-DD--HH-MM-SS--N`
-  (N = 0-indexed); each segment = **exactly 1 minute** (UTC timestamps). Files per segment:
-  `fcamera.hevc` (~76MB road), `ecamera.hevc` (~76MB wide), `qcamera.ts` (~12MB preview),
-  `rlog`/`rlog.bz2` (~3MB), `qlog`/`qlog.bz2` (~1MB).
+- **copyparty API** (M1-verified against source): JSON dir listing `GET .../?ls=j` returns
+  `{dirs, files}`; each entry has `href` (percent-encoded), `sz` (bytes), `ts` (mtime, Unix
+  **seconds**) — **`name` is omitted from the JSON**, so derive the filename from `href`.
+  Per-folder archive `?zip` / `?tar`; auth via `?pw=<pw>` query or `PW:` header (anonymous OK;
+  **401** anon-denied / **403** authed-denied). **HTTP Range IS supported** in current source
+  (206 / `Content-Range`) — the earlier "#329 unreliable" claim isn't visible in this version;
+  we still default to **file-granular** resume for safety and **re-verify Range in M5** before
+  relying on byte-range. Username/password may be empty for anonymous access.
+- **Comma dashcam storage** (M1-verified against sunnypilot source): segment dirs are **flat**
+  under `/data/media/0/realdata/`, named `{route}--{N}` where `route = {8hexcounter}--{10hexrandom}`
+  (e.g. `000001a3--c20ba54385--0`; N = 0-indexed) — **no timestamp/dongle-id in the on-disk
+  name**; the `dongleid|YYYY-MM-DD--HH-MM-SS` form is the **comma-cloud** representation only.
+  Each segment = **exactly 1 minute**; wall-clock time comes from copyparty's `ts` mtime. Files
+  per segment: `fcamera.hevc` (~76MB road), `ecamera.hevc` (~76MB wide), `dcamera.hevc` (driver,
+  if enabled), `qcamera.ts` (~12MB preview), `rlog.zst`/`rlog.bz2` (~3MB), `qlog.zst`/`qlog.bz2`
+  (~1MB), and a transient **`rlog.lock`** present only while the segment is still recording.
 - **Connectivity:** comma hotspot IP defaults to `192.168.43.1`; copyparty port is user-configured. WiFi IP is user configured. 
 - **copyparty DELETE endpoint:** exact method is uncertain across versions — the M6 plan
   **verifies it against a real copyparty instance and implements + tests real deletion**
@@ -168,12 +175,13 @@ blocked on mobile).
 ## Key algorithms
 
 **Drive grouping (shared, online listing & offline mirror scan use the SAME function).**
-Reduce every segment to an absolute expected start = `route_start_ms + N*60_000`. Two
-segments are contiguous iff `abs(next_start − prev_start − 60_000) <= 2000ms`. This unifies
-"same route, consecutive index" and "route name changed but timestamps adjacent" into one
-check, and naturally splits drives at any missing minute. `drive_id` = first segment's key
+*(on-disk names carry no timestamp, so grouping keys on **route-id + segment
+index** with the `ts` mtime as the time signal)* Within a route, two segments are contiguous iff their `segment_num`s are
+consecutive; a **new `route_id`** (a new loggerd session) or a **missing index** starts a new
+drive. The segment `ts` mtime is a secondary sanity signal (gap-check:
+`abs(next_mtime − prev_mtime − 60_000)` should be small). `drive_id` = first segment's key
 (stable as the drive grows). Property tests assert: union of drives' segments == input; no
-internal >60s gap; idempotent & order-independent.
+internal index gap within a drive; idempotent & order-independent.
 
 **Partial / resume (no HTTP range).** Download to `<file>.part` → fsync → atomic rename to
 `<file>`. So a committed file = no `.part`. `classify_file`: `.part` present → `InProgress`
