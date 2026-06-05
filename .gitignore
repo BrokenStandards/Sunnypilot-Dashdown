@@ -33,3 +33,6 @@ DerivedData/
 # --- OS / editor ------------------------------------------------------------
 .DS_Store
 *.swp
+
+# Claude Code transient runtime lock
+.claude/scheduled_tasks.lock

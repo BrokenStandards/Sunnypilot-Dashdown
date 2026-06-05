@@ -90,6 +90,40 @@ impl DownloadState {
     }
 }
 
+/// Sync state of a whole drive against the active file selection. Stored in the
+/// `drive` table from M2; only `NotDownloaded` is produced until the sync engine
+/// (M5) computes the real value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncStatus {
+    NotDownloaded,
+    Partial,
+    Complete,
+    Downloading,
+    Failed,
+}
+
+impl SyncStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SyncStatus::NotDownloaded => "not_downloaded",
+            SyncStatus::Partial => "partial",
+            SyncStatus::Complete => "complete",
+            SyncStatus::Downloading => "downloading",
+            SyncStatus::Failed => "failed",
+        }
+    }
+    pub fn parse(s: &str) -> Result<Self> {
+        match s {
+            "not_downloaded" => Ok(SyncStatus::NotDownloaded),
+            "partial" => Ok(SyncStatus::Partial),
+            "complete" => Ok(SyncStatus::Complete),
+            "downloading" => Ok(SyncStatus::Downloading),
+            "failed" => Ok(SyncStatus::Failed),
+            other => Err(CoreError::Parse(format!("bad sync state: {other}"))),
+        }
+    }
+}
+
 /// One file inside a segment, as seen on the remote (copyparty) side.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SegmentFile {
@@ -118,6 +152,32 @@ impl Segment {
             .max()
             .map(time::secs_to_ms)
     }
+}
+
+/// A *drive*: a maximal run of consecutive 1-minute segments within one route
+/// (see `drive_grouping::group_segments`). Owns its segments so callers/tests
+/// can expand it; the summary fields are derived from `segments` and are only
+/// ever set by `group_segments` or DB hydration, so they stay consistent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Drive {
+    /// First segment's `dir_name()` — stable as the drive grows.
+    pub drive_key: String,
+    pub route_id: String,
+    pub first_segment_num: u32,
+    pub last_segment_num: u32,
+    /// Earliest segment's approx wall-clock time (epoch ms); `None` if it has no files.
+    pub start_ms: Option<i64>,
+    /// Last segment's approx time + one segment length (half-open, conservative
+    /// for the M6 retention age guard); `None` if the last segment has no files.
+    pub end_ms: Option<i64>,
+    pub segment_count: u32,
+    /// Any segment still recording (`rlog.lock` present) — typically the last.
+    pub recording: bool,
+    /// Default `NotDownloaded` in M2; the real value is computed in M5.
+    pub sync_state: SyncStatus,
+    /// User pin; default `false`, behavior lands in M6.
+    pub preserved: bool,
+    pub segments: Vec<Segment>,
 }
 
 /// A configured Comma device. Connection fields are exercised in M1; the
@@ -153,5 +213,24 @@ impl Device {
     /// Base copyparty URL for the active connection, e.g. `http://192.168.43.1:3923/`.
     pub fn base_url(&self) -> String {
         format!("http://{}:{}/", self.active_ip(), self.port)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_status_str_round_trip() {
+        for s in [
+            SyncStatus::NotDownloaded,
+            SyncStatus::Partial,
+            SyncStatus::Complete,
+            SyncStatus::Downloading,
+            SyncStatus::Failed,
+        ] {
+            assert_eq!(SyncStatus::parse(s.as_str()).unwrap(), s);
+        }
+        assert!(SyncStatus::parse("nonsense").is_err());
     }
 }
