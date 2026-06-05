@@ -18,6 +18,18 @@ pub fn file_rel(realdata_rel: &str, seg: &SegmentName, file_name: &str) -> Strin
     }
 }
 
+/// copyparty-relative path of one segment *directory*, with a trailing slash,
+/// e.g. `realdata/000001a3--c20ba54385--0/`. Used to delete/prune a whole
+/// segment (recursive remote DELETE, local `remove_dir`).
+pub fn dir_rel(realdata_rel: &str, seg: &SegmentName) -> String {
+    let prefix = realdata_rel.trim_matches('/');
+    if prefix.is_empty() {
+        format!("{}/", seg.dir_name())
+    } else {
+        format!("{}/{}/", prefix, seg.dir_name())
+    }
+}
+
 /// Inverse of [`file_rel`]: recover `(segment, file_name)` from a rel path under
 /// `realdata_rel`. Returns `None` on prefix mismatch, `..`/`.` traversal, a
 /// non-segment directory, or a nested file path.
@@ -81,6 +93,17 @@ mod tests {
             parse_file_rel("realdata/", &rel),
             Some((s, "qcamera.ts".to_string()))
         );
+    }
+
+    #[test]
+    fn dir_rel_has_trailing_slash() {
+        let s = seg("000001a3--c20ba54385", 0);
+        assert_eq!(
+            dir_rel("realdata/", &s),
+            "realdata/000001a3--c20ba54385--0/"
+        );
+        assert_eq!(dir_rel("realdata", &s), "realdata/000001a3--c20ba54385--0/");
+        assert_eq!(dir_rel("", &s), "000001a3--c20ba54385--0/");
     }
 
     #[test]

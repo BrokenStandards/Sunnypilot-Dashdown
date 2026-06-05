@@ -5,6 +5,7 @@
 
 pub mod download_job;
 pub mod resume;
+pub mod retention;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,7 +21,10 @@ use crate::db::Repo;
 use crate::drive_grouping::group_segments;
 use crate::error::{CoreError, Result};
 use crate::model::{Device, DownloadState, Drive, FileSelection, JobState, SyncStatus};
-use crate::storage::{paths::file_rel, MirrorStore};
+use crate::storage::{
+    paths::{dir_rel, file_rel},
+    MirrorStore,
+};
 
 /// Segments path under each device's copyparty root.
 /// (TODO M8: make device-configurable if a device serves realdata elsewhere.)
@@ -133,6 +137,96 @@ impl SyncEngine {
             r.get_drives(device_id)
         })
         .await
+    }
+
+    /// Prune local drives that exceed the device's `retention_max_minutes`
+    /// budget (newest kept first, `preserved` always skipped). Deletes only local
+    /// mirror files — the remote is untouched — then reconciles so pruned drives
+    /// reclassify to `NotDownloaded`. No-op when no budget is set. Returns the
+    /// pruned drive_keys. Intended Phase-B trigger: after each sync/download.
+    pub async fn enforce_retention(&self, device: &Device) -> Result<Vec<String>> {
+        let device_id = device.id;
+        let drives = db(self.repo.clone(), move |r| r.get_drives(device_id)).await?;
+        let pruned = retention::plan_prune(&drives, device.retention_max_minutes);
+        if pruned.is_empty() {
+            return Ok(pruned);
+        }
+
+        // Delete each pruned drive's local segment dirs (FS ops, no DB lock held).
+        let mirror = self.mirror_for(device);
+        for d in &drives {
+            if pruned.contains(&d.drive_key) {
+                for seg in &d.segments {
+                    mirror.remove_dir(&dir_rel(REALDATA_REL, &seg.name)).await?;
+                }
+            }
+        }
+        // Reclassify from disk (pruned drives are now Missing → NotDownloaded).
+        self.reconcile(device_id, device.file_selection).await?;
+        Ok(pruned)
+    }
+
+    /// Auto-delete eligible drives' footage from the comma device, keeping the
+    /// local copy. A drive is deleted only when it passes the eligibility guard
+    /// (Complete + not recording + at least `auto_delete_min_age_min` old) AND a
+    /// fresh remote re-list still shows it Complete for the active selection — so
+    /// a drive that grew or changed since the last index is left alone. Deletes
+    /// whole segment directories recursively. No-op unless the device has
+    /// `auto_delete_from_comma` enabled. `now_ms` is injected for determinism.
+    /// Returns the drive_keys whose remote footage was deleted.
+    pub async fn auto_delete_from_comma(
+        &self,
+        device: &Device,
+        now_ms: i64,
+    ) -> Result<Vec<String>> {
+        if !device.auto_delete_from_comma {
+            return Ok(Vec::new());
+        }
+        let device_id = device.id;
+        let selection = device.file_selection;
+        let min_age = device.auto_delete_min_age_min;
+
+        let drives = db(self.repo.clone(), move |r| r.get_drives(device_id)).await?;
+        let candidates: Vec<&Drive> = drives
+            .iter()
+            .filter(|d| retention::eligible_for_remote_delete(d, now_ms, min_age))
+            .collect();
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Fresh remote snapshot for the re-verify guard.
+        let client = Self::client_for(device)?;
+        let fresh = client.list_segments(REALDATA_REL).await?;
+        let regrouped = group_segments(fresh);
+        let mirror = self.mirror_for(device);
+
+        let mut deleted = Vec::new();
+        for cand in candidates {
+            let Some(fresh_drive) = regrouped.iter().find(|d| d.drive_key == cand.drive_key) else {
+                continue; // already gone remotely — nothing to delete
+            };
+            // Re-verify against current remote: a grown/changed drive is Partial.
+            if fresh_drive.recording
+                || resume::drive_status(&mirror, fresh_drive, &selection, REALDATA_REL)
+                    != SyncStatus::Complete
+            {
+                continue;
+            }
+            for target in retention::remote_delete_targets(fresh_drive, REALDATA_REL) {
+                client.delete(&target).await?;
+            }
+            deleted.push(cand.drive_key.clone());
+        }
+        Ok(deleted)
+    }
+
+    /// Phase-B maintenance pass: free local space first (retention), then reclaim
+    /// remote space for what is safely mirrored (auto-delete-from-comma).
+    pub async fn run_maintenance(&self, device: &Device, now_ms: i64) -> Result<()> {
+        self.enforce_retention(device).await?;
+        self.auto_delete_from_comma(device, now_ms).await?;
+        Ok(())
     }
 
     /// Spawn a drive download on its own task; return a handle to cancel it.
