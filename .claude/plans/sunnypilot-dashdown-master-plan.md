@@ -57,9 +57,10 @@ Comma devices running the Sunnypilot openpilot fork, where footage is served ove
   **seconds**) — **`name` is omitted from the JSON**, so derive the filename from `href`.
   Per-folder archive `?zip` / `?tar`; auth via `?pw=<pw>` query or `PW:` header (anonymous OK;
   **401** anon-denied / **403** authed-denied). **HTTP Range IS supported** in current source
-  (206 / `Content-Range`) — the earlier "#329 unreliable" claim isn't visible in this version;
-  we still default to **file-granular** resume for safety and **re-verify Range in M5** before
-  relying on byte-range. Username/password may be empty for anonymous access.
+  (206 / `Content-Range`) — **M5-verified** against real copyparty (`probe_range`) and now relied on:
+  the downloader **resumes via byte-range** (`Range: bytes=N-` from the `.part` size) with an automatic
+  **file-granular fallback** when a server answers 200 (ignores Range). Username/password may be empty
+  for anonymous access.
 - **Comma dashcam storage** (M1-verified against sunnypilot source): segment dirs are **flat**
   under `/data/media/0/realdata/`, named `{route}--{N}` where `route = {8hexcounter}--{10hexrandom}`
   (e.g. `000001a3--c20ba54385--0`; N = 0-indexed) — **no timestamp/dongle-id in the on-disk
@@ -189,12 +190,14 @@ drive. The segment `ts` mtime is a secondary sanity signal (gap-check:
 (stable as the drive grows). Property tests assert: union of drives' segments == input; no
 internal index gap within a drive; idempotent & order-independent.
 
-**Partial / resume (no HTTP range).** Download to `<file>.part` → fsync → atomic rename to
-`<file>`. So a committed file = no `.part`. `classify_file`: `.part` present → `InProgress`
-(re-fetch whole); final missing → `Missing`; final present & size==remote_size →
-`Complete`; size mismatch → `SizeMismatch` (re-fetch). Drive is `Partial`/`resumable` if any
+**Partial / resume (byte-range, M5).** Download to `<file>.part` → fsync → atomic rename to
+`<file>`. So a committed file = no `.part`. `classify_file`: final present & size==remote_size →
+`Complete`; final present & wrong size → `SizeMismatch` (re-fetch); final missing & `.part`
+present → `InProgress` (**resume** from the `.part` offset via `Range: bytes=N-`, append on 206,
+restart on 200/stale); final missing & no `.part` → `Missing`. Drive is `Partial`/`resumable` if any
 selected file is Missing/InProgress/SizeMismatch **or** a later contiguous remote segment is
-missing locally.
+missing locally (realized via the index refresh in `sync_now` + `reconcile_device`, which also
+recovers stale `running` jobs after a crash).
 
 **Retention + auto-delete safety guard.** Retention prunes oldest-beyond-budget local drives
 (newest-first), skipping `preserved`. Auto-delete-from-comma fires only when: (1) drive
@@ -220,7 +223,7 @@ Root `AppCore::new(db_path, mirror_root)`. Async methods (Swift `async throws` /
 
 ## Background execution contract (full background download on both platforms)
 
-The **Rust core owns the transfer engine** (reqwest streaming + the file-granular resume
+The **Rust core owns the transfer engine** (reqwest streaming + the byte-range resume
 engine). The native layer provides background scheduling and true-suspension execution. Full
 background download is built and tested within each platform's phase:
 
@@ -233,7 +236,7 @@ background download is built and tested within each platform's phase:
   **both** mechanisms and tests them end-to-end: **BGProcessingTask** windows that call
   `sync_now`/`start_drive_download`, **and** a Swift **`URLSession` background** downloader
   that completes large transfers while the app is suspended/killed and hands each finished
-  file to the core for commit + status update. The core's file-granular resume engine makes
+  file to the core for commit + status update. The core's byte-range resume engine makes
   any interrupted transfer safe to continue on the next window/launch. The iOS phase tests:
   start a drive, suspend/kill the app, confirm completion and resume.
 

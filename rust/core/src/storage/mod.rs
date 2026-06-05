@@ -54,20 +54,40 @@ impl MirrorStore {
         std::fs::metadata(p).ok().map(|m| m.len())
     }
 
+    /// Size of an in-progress `.part`, if present (the byte-range resume offset).
+    pub fn part_size(&self, rel: &str) -> Option<u64> {
+        let p = self.part_path(rel).ok()?;
+        std::fs::metadata(p).ok().map(|m| m.len())
+    }
+
     /// Open a fresh `.part` for `rel`, creating parent dirs. Truncates any stale
-    /// `.part` (M3 always re-fetches from offset 0; resume is M5).
+    /// `.part` — used for a download starting from byte 0 (or a Range-ignoring
+    /// server that returns the whole body).
     pub async fn create_part(&self, rel: &str) -> Result<PartFile> {
+        self.open_part(rel, true).await
+    }
+
+    /// Open `rel`'s `.part` in **append** mode (existing bytes preserved, writes
+    /// go to the end) — used to resume a partial download from its offset.
+    pub async fn open_part_append(&self, rel: &str) -> Result<PartFile> {
+        self.open_part(rel, false).await
+    }
+
+    async fn open_part(&self, rel: &str, truncate: bool) -> Result<PartFile> {
         let final_ = self.final_path(rel)?;
         let part = self.part_path(rel)?;
         if let Some(parent) = final_.parent() {
             fs::create_dir_all(parent).await?;
         }
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&part)
-            .await?;
+        let mut opts = fs::OpenOptions::new();
+        opts.create(true);
+        if truncate {
+            opts.write(true).truncate(true);
+        } else {
+            // Append: writes go to the end; existing partial bytes are kept.
+            opts.append(true);
+        }
+        let file = opts.open(&part).await?;
         Ok(PartFile { file, part, final_ })
     }
 

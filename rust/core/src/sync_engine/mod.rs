@@ -4,6 +4,7 @@
 //! scheduling (Android Foreground Service / iOS BGTask) drives it in Phase B.
 
 pub mod download_job;
+pub mod resume;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,7 +19,7 @@ use crate::copyparty_client::{CopypartyClient, Credentials};
 use crate::db::Repo;
 use crate::drive_grouping::group_segments;
 use crate::error::{CoreError, Result};
-use crate::model::{Device, Drive, JobState, SyncStatus};
+use crate::model::{Device, DownloadState, Drive, FileSelection, JobState, SyncStatus};
 use crate::storage::{paths::file_rel, MirrorStore};
 
 /// Segments path under each device's copyparty root.
@@ -82,8 +83,8 @@ impl SyncEngine {
     }
 
     /// Refresh the device's index: list segments, persist them, regroup, persist
-    /// drives. Does NOT download. Returns the device's drives (hydrated,
-    /// preserving stored `sync_state`/`preserved`).
+    /// drives, then reclassify each drive's `sync_state` from disk. Does NOT
+    /// download. Returns the device's drives (hydrated, with correct sync state).
     pub async fn sync_now(&self, device: &Device) -> Result<Vec<Drive>> {
         let client = Self::client_for(device)?;
         let segments = client.list_segments(REALDATA_REL).await?;
@@ -92,7 +93,43 @@ impl SyncEngine {
         db(self.repo.clone(), move |r| {
             r.upsert_segments(device_id, &segments)?;
             let drives = group_segments(segments);
-            r.replace_drives(device_id, &drives)?;
+            r.replace_drives(device_id, &drives)
+        })
+        .await?;
+        self.reconcile(device_id, device.file_selection).await
+    }
+
+    /// Recompute every drive's `sync_state` from the local mirror and persist it;
+    /// recover stale `running` jobs (a fresh process can't have a live download)
+    /// to a terminal state. Offline-capable (index + disk, no network). Returns
+    /// the re-read drives. Discovering newly-recorded remote segments needs
+    /// `sync_now` first.
+    pub async fn reconcile_device(&self, device: &Device) -> Result<Vec<Drive>> {
+        self.reconcile(device.id, device.file_selection).await
+    }
+
+    /// Shared reconcile: classify + persist drive states and recover stale jobs,
+    /// all in one blocking hop (the mirror's `std::fs` stats are sync).
+    async fn reconcile(&self, device_id: i64, selection: FileSelection) -> Result<Vec<Drive>> {
+        let mirror_root = self.mirror_root.clone();
+        db(self.repo.clone(), move |r| {
+            let mirror = MirrorStore::new(mirror_root.join(device_id.to_string()));
+            let drives = r.get_drives(device_id)?;
+            for d in &drives {
+                let status = resume::drive_status(&mirror, d, &selection, REALDATA_REL);
+                r.set_drive_sync_state(device_id, &d.drive_key, status)?;
+                // Restart recovery: a job left `running` by a dead process is stale.
+                if let Some(job) = r.get_job(device_id, &d.drive_key)? {
+                    if job.state == JobState::Running {
+                        let (js, err) = if status == SyncStatus::Complete {
+                            (JobState::Complete, None)
+                        } else {
+                            (JobState::Failed, Some(resume::INTERRUPTED))
+                        };
+                        r.set_job_state(device_id, &d.drive_key, js, err)?;
+                    }
+                }
+            }
             r.get_drives(device_id)
         })
         .await
@@ -168,7 +205,7 @@ impl SyncEngine {
         let mut bytes_done: u64 = 0;
         let mut todo: Vec<Item> = Vec::new();
         for it in items {
-            if mirror.is_complete(&it.rel) && mirror.local_size(&it.rel) == Some(it.size) {
+            if resume::classify_file(&mirror, &it.rel, it.size) == DownloadState::Complete {
                 files_done += 1;
                 bytes_done += it.size;
             } else {

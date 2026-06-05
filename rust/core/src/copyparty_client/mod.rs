@@ -113,11 +113,7 @@ impl CopypartyClient {
         rel: &str,
         writer: &mut W,
     ) -> Result<u64> {
-        let resp = auth::apply_auth(self.http.get(self.url_for(rel)?), &self.creds)
-            .send()
-            .await?;
-        check_status(&resp)?;
-        download::stream_to_writer(resp, writer).await
+        self.fetch(rel, None).await?.stream_to(writer).await
     }
 
     /// Convenience: download a file fully into memory.
@@ -125,6 +121,48 @@ impl CopypartyClient {
         let mut buf = Vec::new();
         self.download_to(rel, &mut buf).await?;
         Ok(buf)
+    }
+
+    /// Issue a GET for `rel`, optionally resuming from byte `range_from`
+    /// (`Range: bytes=N-`). Both `200` (full body) and `206` (partial) are
+    /// success — inspect [`Fetch::partial`] to decide append-vs-restart.
+    pub async fn fetch(&self, rel: &str, range_from: Option<u64>) -> Result<Fetch> {
+        let mut req = auth::apply_auth(self.http.get(self.url_for(rel)?), &self.creds);
+        if let Some(start) = range_from {
+            req = req.header(reqwest::header::RANGE, format!("bytes={start}-"));
+        }
+        let resp = req.send().await?;
+        check_status(&resp)?;
+        Ok(Fetch { resp })
+    }
+
+    /// Re-verify that the server honors HTTP Range (a `bytes=0-0` probe returns
+    /// `206`). The downloader is self-correcting (it falls back to a full fetch
+    /// on `200`), so this is for verification/diagnostics + a future decision.
+    pub async fn probe_range(&self, rel: &str) -> Result<bool> {
+        let resp = auth::apply_auth(self.http.get(self.url_for(rel)?), &self.creds)
+            .header(reqwest::header::RANGE, "bytes=0-0")
+            .send()
+            .await?;
+        check_status(&resp)?;
+        Ok(resp.status() == reqwest::StatusCode::PARTIAL_CONTENT)
+    }
+}
+
+/// A GET response in flight, possibly a Range partial.
+pub struct Fetch {
+    resp: reqwest::Response,
+}
+
+impl Fetch {
+    /// Whether the server answered `206 Partial Content` (honored the Range).
+    pub fn partial(&self) -> bool {
+        self.resp.status() == reqwest::StatusCode::PARTIAL_CONTENT
+    }
+
+    /// Stream the body into `writer`, returning bytes written.
+    pub async fn stream_to<W: tokio::io::AsyncWrite + Unpin>(self, writer: &mut W) -> Result<u64> {
+        download::stream_to_writer(self.resp, writer).await
     }
 }
 

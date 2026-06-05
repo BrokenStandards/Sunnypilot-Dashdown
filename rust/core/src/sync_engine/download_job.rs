@@ -53,9 +53,12 @@ pub struct DownloadProgress {
 /// - `Err(..)` — exhausted attempts on a size mismatch, or a non-retriable
 ///   transport error (401/403/404). A leftover `.part` may remain (benign).
 ///
-/// Cancellation works by racing the download future against the token in
-/// `tokio::select!`; on cancel the future (which owns the `PartFile`) is dropped,
-/// closing the in-flight stream. No change to `download_to` is needed.
+/// **Byte-range resume:** the attempt derives a resume offset from any existing
+/// `.part` and sends `Range: bytes=N-`. On `206` it appends the tail to the
+/// `.part`; on `200` (server ignored Range) or a stale/oversized `.part` it
+/// restarts from byte 0. Cancellation races the attempt against the token in a
+/// `biased` `tokio::select!`; on cancel the future (which owns the `PartFile`) is
+/// dropped, leaving the partial `.part` for the *next* resume.
 pub async fn download_file(
     client: &CopypartyClient,
     mirror: &MirrorStore,
@@ -72,28 +75,36 @@ pub async fn download_file(
             biased;
             _ = cancel.cancelled() => return Ok(FileOutcome::Canceled),
             r = async {
-                // `create_part` truncates any stale `.part`, so each attempt
-                // restarts from byte 0 (file-granular; byte-range resume is M5).
-                let mut pf = mirror.create_part(rel).await?;
-                let written = client.download_to(rel, pf.writer()).await?;
-                Ok::<_, CoreError>((pf, written))
+                // Resume from the `.part` size, unless it's stale (>= expected,
+                // e.g. the remote shrank) — then restart from 0.
+                let existing = mirror.part_size(rel).unwrap_or(0);
+                let resume_from = if existing > 0 && existing < expected_size { existing } else { 0 };
+
+                let fetch = client.fetch(rel, (resume_from > 0).then_some(resume_from)).await?;
+                let (mut pf, base) = if resume_from > 0 && fetch.partial() {
+                    (mirror.open_part_append(rel).await?, resume_from) // 206: append the tail
+                } else {
+                    (mirror.create_part(rel).await?, 0) // fresh, or 200 (Range ignored): restart
+                };
+                let written = fetch.stream_to(pf.writer()).await?;
+                Ok::<_, CoreError>((pf, base + written))
             } => r,
         };
 
         match attempt_result {
-            Ok((pf, written)) if written == expected_size => {
+            Ok((pf, total)) if total == expected_size => {
                 pf.commit().await?;
                 return Ok(FileOutcome::Complete);
             }
-            Ok((_pf, written)) => {
+            Ok((_pf, total)) => {
                 tracing::warn!(
                     rel,
                     attempt,
-                    written,
+                    total,
                     expected_size,
                     "size mismatch; re-fetching"
                 );
-                // `_pf` drops here, leaving the `.part`; the next attempt truncates it.
+                // `_pf` drops here, leaving the `.part`; the next attempt resumes/truncates it.
             }
             Err(e) if is_retriable(&e) && attempt < max_attempts => {
                 tracing::warn!(rel, attempt, error = %e, "download attempt failed; retrying");
