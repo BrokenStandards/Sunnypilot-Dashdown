@@ -9,7 +9,9 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::{CoreError, Result};
-use crate::model::{ConnMode, Device, FileKind, FileSelection, Segment, SegmentFile, SegmentName};
+use crate::model::{
+    ConnMode, Device, Drive, FileKind, FileSelection, Segment, SegmentFile, SegmentName, SyncStatus,
+};
 
 pub type Pool = r2d2::Pool<SqliteConnectionManager>;
 type PooledConn = r2d2::PooledConnection<SqliteConnectionManager>;
@@ -17,6 +19,9 @@ type PooledConn = r2d2::PooledConnection<SqliteConnectionManager>;
 const DEVICE_COLS: &str = "id, name, dongle_label, hotspot_ip, wifi_ip, port, active_mode, \
     password, auto_sync, file_selection, retention_max_minutes, auto_delete_from_comma, \
     auto_delete_min_age_min";
+
+const DRIVE_COLS: &str = "drive_key, route_id, first_seg, last_seg, start_ms, end_ms, \
+    segment_count, recording, preserved, sync_state";
 
 pub struct Repo {
     pool: Pool,
@@ -195,6 +200,200 @@ impl Repo {
         }
         Ok(out)
     }
+
+    // ---- drives -----------------------------------------------------------
+
+    /// Replace the device's drive set with `drives`: upsert each (updating only
+    /// the *derived* columns, leaving `preserved`/`sync_state` intact) and prune
+    /// any drive whose `drive_key` is no longer present. One transaction.
+    pub fn replace_drives(&self, device_id: i64, drives: &[Drive]) -> Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        for d in drives {
+            tx.execute(
+                "INSERT INTO drive \
+                    (device_id, drive_key, route_id, first_seg, last_seg, start_ms, end_ms, \
+                     segment_count, recording) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) \
+                 ON CONFLICT(device_id, drive_key) DO UPDATE SET \
+                    route_id=excluded.route_id, first_seg=excluded.first_seg, \
+                    last_seg=excluded.last_seg, start_ms=excluded.start_ms, \
+                    end_ms=excluded.end_ms, segment_count=excluded.segment_count, \
+                    recording=excluded.recording",
+                params![
+                    device_id,
+                    d.drive_key,
+                    d.route_id,
+                    d.first_segment_num as i64,
+                    d.last_segment_num as i64,
+                    d.start_ms,
+                    d.end_ms,
+                    d.segment_count as i64,
+                    d.recording,
+                ],
+            )?;
+        }
+        // Prune drives that disappeared (preserved/sync_state go with them).
+        if drives.is_empty() {
+            tx.execute("DELETE FROM drive WHERE device_id=?1", params![device_id])?;
+        } else {
+            let placeholders = vec!["?"; drives.len()].join(",");
+            let sql = format!(
+                "DELETE FROM drive WHERE device_id=? AND drive_key NOT IN ({placeholders})"
+            );
+            let mut p: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(drives.len() + 1);
+            p.push(&device_id);
+            for d in drives {
+                p.push(&d.drive_key);
+            }
+            tx.execute(&sql, p.as_slice())?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Read the device's drives (ordered by route then start index), hydrating
+    /// each drive's segments via a contiguous-range fetch.
+    pub fn get_drives(&self, device_id: i64) -> Result<Vec<Drive>> {
+        let conn = self.conn()?;
+        let raws: Vec<RawDrive> = {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {DRIVE_COLS} FROM drive WHERE device_id=?1 ORDER BY route_id, first_seg"
+            ))?;
+            let rows = stmt.query_map(params![device_id], map_raw_drive)?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let mut out = Vec::with_capacity(raws.len());
+        for raw in raws {
+            let segments =
+                segments_in_range(&conn, device_id, &raw.route_id, raw.first_seg, raw.last_seg)?;
+            out.push(Drive {
+                drive_key: raw.drive_key,
+                first_segment_num: raw.first_seg as u32,
+                last_segment_num: raw.last_seg as u32,
+                start_ms: raw.start_ms,
+                end_ms: raw.end_ms,
+                segment_count: raw.segment_count as u32,
+                recording: raw.recording,
+                sync_state: SyncStatus::parse(&raw.sync_state)?,
+                preserved: raw.preserved,
+                route_id: raw.route_id,
+                segments,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Set a drive's `preserved` pin (M6 behavior; the setter exists from M2).
+    pub fn set_drive_preserved(
+        &self,
+        device_id: i64,
+        drive_key: &str,
+        preserved: bool,
+    ) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE drive SET preserved=?3 WHERE device_id=?1 AND drive_key=?2",
+            params![device_id, drive_key, preserved],
+        )?;
+        Ok(())
+    }
+
+    /// Set a drive's `sync_state` (M5 behavior; the setter exists from M2).
+    pub fn set_drive_sync_state(
+        &self,
+        device_id: i64,
+        drive_key: &str,
+        state: SyncStatus,
+    ) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE drive SET sync_state=?3 WHERE device_id=?1 AND drive_key=?2",
+            params![device_id, drive_key, state.as_str()],
+        )?;
+        Ok(())
+    }
+}
+
+/// Fetch one route's segments whose index falls in `[first, last]`, with files.
+/// Safe because a drive's indices are contiguous by construction. Takes a
+/// borrowed `Connection` so callers reuse a single pooled connection (the
+/// in-memory test pool has only one).
+fn segments_in_range(
+    conn: &Connection,
+    device_id: i64,
+    route_id: &str,
+    first: i64,
+    last: i64,
+) -> Result<Vec<Segment>> {
+    let seg_rows: Vec<(i64, i64, bool)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, segment_num, recording FROM segment \
+             WHERE device_id=?1 AND route_id=?2 AND segment_num BETWEEN ?3 AND ?4 \
+             ORDER BY segment_num",
+        )?;
+        let rows = stmt.query_map(params![device_id, route_id, first, last], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+
+    let mut out = Vec::with_capacity(seg_rows.len());
+    for (seg_id, segment_num, recording) in seg_rows {
+        let mut fstmt = conn.prepare(
+            "SELECT kind, name, remote_size, mtime_s FROM seg_file \
+             WHERE segment_id=?1 ORDER BY name",
+        )?;
+        let files: rusqlite::Result<Vec<SegmentFile>> = fstmt
+            .query_map(params![seg_id], |r| {
+                Ok(SegmentFile {
+                    kind: FileKind::from_db(&r.get::<_, String>(0)?),
+                    name: r.get(1)?,
+                    remote_size: r.get::<_, i64>(2)? as u64,
+                    mtime_s: r.get(3)?,
+                })
+            })?
+            .collect();
+        out.push(Segment {
+            name: SegmentName {
+                route_id: route_id.to_string(),
+                segment_num: segment_num as u32,
+            },
+            files: files?,
+            recording,
+        });
+    }
+    Ok(out)
+}
+
+/// Raw `drive` row; `sync_state` parsed into [`SyncStatus`] outside the row
+/// closure so a bad value surfaces a `CoreError` (mirrors `RawDevice`).
+struct RawDrive {
+    drive_key: String,
+    route_id: String,
+    first_seg: i64,
+    last_seg: i64,
+    start_ms: Option<i64>,
+    end_ms: Option<i64>,
+    segment_count: i64,
+    recording: bool,
+    preserved: bool,
+    sync_state: String,
+}
+
+fn map_raw_drive(r: &rusqlite::Row) -> rusqlite::Result<RawDrive> {
+    Ok(RawDrive {
+        drive_key: r.get(0)?,
+        route_id: r.get(1)?,
+        first_seg: r.get(2)?,
+        last_seg: r.get(3)?,
+        start_ms: r.get(4)?,
+        end_ms: r.get(5)?,
+        segment_count: r.get(6)?,
+        recording: r.get(7)?,
+        preserved: r.get(8)?,
+        sync_state: r.get(9)?,
+    })
 }
 
 /// Raw device row (primitive columns), converted to `Device` afterwards so enum

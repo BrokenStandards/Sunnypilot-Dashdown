@@ -7,6 +7,7 @@
 
 pub mod copyparty_client;
 pub mod db;
+pub mod drive_grouping;
 pub mod error;
 pub mod model;
 

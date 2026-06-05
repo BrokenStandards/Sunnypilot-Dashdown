@@ -65,7 +65,7 @@ fn sample_segments() -> Vec<Segment> {
 #[test]
 fn migrates_and_round_trips() {
     let repo = Repo::open_in_memory().unwrap();
-    assert_eq!(repo.schema_version().unwrap(), 1);
+    assert_eq!(repo.schema_version().unwrap(), 2);
 
     let id = repo.insert_device(&sample_device()).unwrap();
     let got = repo.get_device(id).unwrap().unwrap();
@@ -93,13 +93,13 @@ fn reopen_is_idempotent_and_persists() {
 
     let id = {
         let repo = Repo::open(&path).unwrap();
-        assert_eq!(repo.schema_version().unwrap(), 1);
+        assert_eq!(repo.schema_version().unwrap(), 2);
         repo.insert_device(&sample_device()).unwrap()
     };
 
     // Re-open the same file: migrations must NOT re-run, data must persist.
     let repo = Repo::open(&path).unwrap();
-    assert_eq!(repo.schema_version().unwrap(), 1);
+    assert_eq!(repo.schema_version().unwrap(), 2);
     assert!(repo.get_device(id).unwrap().is_some());
     assert_eq!(repo.list_devices().unwrap().len(), 1);
 }
