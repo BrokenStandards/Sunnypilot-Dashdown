@@ -6,9 +6,10 @@
 //! drive. The copyparty `ts` mtime is only a secondary *sanity* signal — it never
 //! splits a drive (see [`gap_is_sane`]); an anomalous gap just logs a warning.
 //!
-//! This is the shared grouping core. The offline mirror scan (M3) will reuse
-//! [`group_segments`] against locally-scanned segments via `drive_grouping::local`.
+//! This is the shared grouping core. The offline mirror scan reuses
+//! [`group_segments`] against locally-scanned segments via [`local::group_local`].
 
+pub mod local;
 pub mod remote;
 
 use crate::model::time::SEGMENT_MS;

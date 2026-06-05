@@ -10,6 +10,7 @@ pub mod db;
 pub mod drive_grouping;
 pub mod error;
 pub mod model;
+pub mod storage;
 
 uniffi::setup_scaffolding!();
 
