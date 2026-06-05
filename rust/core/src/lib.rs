@@ -11,6 +11,7 @@ pub mod drive_grouping;
 pub mod error;
 pub mod model;
 pub mod storage;
+pub mod sync_engine;
 
 uniffi::setup_scaffolding!();
 

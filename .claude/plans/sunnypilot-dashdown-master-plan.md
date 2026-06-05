@@ -151,12 +151,18 @@ sunnypilot-dashdown/
 
 **Boundary-crossing types** (UniFFI Records/Enums): `Device`, `DeviceSettings`,
 `Drive`, `Segment`, `SegmentFile`, `DownloadProgress`, `DeviceConnectivity`,
-`DriveSyncStatus`, `LogEvent`; enums `ConnMode{Hotspot,Wifi}`,
-`FileSelection{PreviewsOnly,FullVideo,FullVideoPlusLogs}`, `FileKind`,
+`DriveSyncStatus`, `LogEvent`; enums `ConnMode{Hotspot,Wifi}`, `FileKind`,
 `DownloadState{Missing,InProgress,Complete,SizeMismatch}`,
+`JobState{Running,Complete,Failed,Canceled}`,
 `SyncStatus{NotDownloaded,Partial,Complete,Downloading,Failed}`,
 `ConnDot{Green,Blue,Red}`, `LogLevel`; error `CoreError`. Objects (Arc): `AppCore`,
 `SyncHandle` (holds a `CancellationToken`).
+
+> **M4 correction:** `FileSelection` is a **per-stream toggle struct** (a UniFFI Record) — one
+> bool per downloadable `FileKind` (`fcamera/ecamera/dcamera/qcamera/rlog/qlog/bootlog/other`), not
+> the original 3-level `{PreviewsOnly,FullVideo,FullVideoPlusLogs}` enum. Audio is muxed into
+> `qcamera.ts` upstream (sunnypilot `RecordAudio`), so it rides the `qcamera` toggle. Persisted as a
+> sorted CSV in the existing `device.file_selection` column (legacy preset names still parse).
 
 **SQLite (metadata only — mirror folder is source of truth, DB is a rebuildable index):**
 tables `device`, `drive`, `segment`, `seg_file`, `download_job`, `schema_version`.

@@ -100,7 +100,7 @@ fn test_device() -> Device {
         active_mode: ConnMode::Hotspot,
         password: None,
         auto_sync: false,
-        file_selection: FileSelection::PreviewsOnly,
+        file_selection: FileSelection::previews_only(),
         retention_max_minutes: None,
         auto_delete_from_comma: false,
         auto_delete_min_age_min: 60,

@@ -34,29 +34,131 @@ impl ConnMode {
     }
 }
 
-/// Which files to sync for a device.
+/// Which file streams to sync for a device — one toggle per downloadable kind.
+/// Audio is muxed into `qcamera.ts` upstream (sunnypilot `RecordAudio`), so it
+/// rides with the `qcamera` toggle rather than being a separate file. Persisted
+/// as a sorted CSV of the enabled kind tokens in `device.file_selection`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileSelection {
-    PreviewsOnly,
-    FullVideo,
-    FullVideoPlusLogs,
+pub struct FileSelection {
+    pub fcamera: bool,
+    pub ecamera: bool,
+    pub dcamera: bool,
+    pub qcamera: bool,
+    pub rlog: bool,
+    pub qlog: bool,
+    pub bootlog: bool,
+    pub other: bool,
 }
 
 impl FileSelection {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            FileSelection::PreviewsOnly => "previews_only",
-            FileSelection::FullVideo => "full_video",
-            FileSelection::FullVideoPlusLogs => "full_video_plus_logs",
+    /// Nothing selected.
+    pub const NONE: FileSelection = FileSelection {
+        fcamera: false,
+        ecamera: false,
+        dcamera: false,
+        qcamera: false,
+        rlog: false,
+        qlog: false,
+        bootlog: false,
+        other: false,
+    };
+
+    /// Only the low-res preview (+ muxed audio) — the lightweight default.
+    pub fn previews_only() -> Self {
+        FileSelection {
+            qcamera: true,
+            ..Self::NONE
         }
     }
+
+    /// Every downloadable stream.
+    pub fn everything() -> Self {
+        FileSelection {
+            fcamera: true,
+            ecamera: true,
+            dcamera: true,
+            qcamera: true,
+            rlog: true,
+            qlog: true,
+            bootlog: true,
+            other: true,
+        }
+    }
+
+    /// Whether files of `kind` are selected for download. The lock marker is
+    /// never a download target.
+    pub fn includes(&self, kind: FileKind) -> bool {
+        match kind {
+            FileKind::FCamera => self.fcamera,
+            FileKind::ECamera => self.ecamera,
+            FileKind::DCamera => self.dcamera,
+            FileKind::QCamera => self.qcamera,
+            FileKind::RLog => self.rlog,
+            FileKind::QLog => self.qlog,
+            FileKind::BootLog => self.bootlog,
+            FileKind::Other => self.other,
+            FileKind::LockMarker => false,
+        }
+    }
+
+    /// Serialize to a sorted CSV of enabled kind tokens (matching `FileKind::as_str`).
+    pub fn as_str(&self) -> String {
+        let mut tokens = Vec::new();
+        for (on, kind) in [
+            (self.fcamera, FileKind::FCamera),
+            (self.ecamera, FileKind::ECamera),
+            (self.dcamera, FileKind::DCamera),
+            (self.qcamera, FileKind::QCamera),
+            (self.rlog, FileKind::RLog),
+            (self.qlog, FileKind::QLog),
+            (self.bootlog, FileKind::BootLog),
+            (self.other, FileKind::Other),
+        ] {
+            if on {
+                tokens.push(kind.as_str());
+            }
+        }
+        tokens.join(",")
+    }
+
+    /// Parse the CSV form. Also accepts the legacy preset names. Unknown tokens
+    /// are ignored (forward-compatible with kinds a newer build might add).
     pub fn parse(s: &str) -> Result<Self> {
         match s {
-            "previews_only" => Ok(FileSelection::PreviewsOnly),
-            "full_video" => Ok(FileSelection::FullVideo),
-            "full_video_plus_logs" => Ok(FileSelection::FullVideoPlusLogs),
-            other => Err(CoreError::Parse(format!("bad file selection: {other}"))),
+            "previews_only" => return Ok(Self::previews_only()),
+            "full_video" => {
+                return Ok(FileSelection {
+                    fcamera: true,
+                    ecamera: true,
+                    dcamera: true,
+                    qcamera: true,
+                    ..Self::NONE
+                })
+            }
+            "full_video_plus_logs" => return Ok(Self::everything()),
+            _ => {}
         }
+        let mut sel = Self::NONE;
+        for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+            match tok {
+                "fcamera" => sel.fcamera = true,
+                "ecamera" => sel.ecamera = true,
+                "dcamera" => sel.dcamera = true,
+                "qcamera" => sel.qcamera = true,
+                "rlog" => sel.rlog = true,
+                "qlog" => sel.qlog = true,
+                "bootlog" => sel.bootlog = true,
+                "other" => sel.other = true,
+                _ => {} // ignore unknown tokens
+            }
+        }
+        Ok(sel)
+    }
+}
+
+impl Default for FileSelection {
+    fn default() -> Self {
+        Self::previews_only()
     }
 }
 
@@ -120,6 +222,36 @@ impl SyncStatus {
             "downloading" => Ok(SyncStatus::Downloading),
             "failed" => Ok(SyncStatus::Failed),
             other => Err(CoreError::Parse(format!("bad sync state: {other}"))),
+        }
+    }
+}
+
+/// State of a drive download job (`download_job.state`). A drive download is
+/// either in progress or in a terminal state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobState {
+    Running,
+    Complete,
+    Failed,
+    Canceled,
+}
+
+impl JobState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JobState::Running => "running",
+            JobState::Complete => "complete",
+            JobState::Failed => "failed",
+            JobState::Canceled => "canceled",
+        }
+    }
+    pub fn parse(s: &str) -> Result<Self> {
+        match s {
+            "running" => Ok(JobState::Running),
+            "complete" => Ok(JobState::Complete),
+            "failed" => Ok(JobState::Failed),
+            "canceled" => Ok(JobState::Canceled),
+            other => Err(CoreError::Parse(format!("bad job state: {other}"))),
         }
     }
 }
@@ -232,5 +364,87 @@ mod tests {
             assert_eq!(SyncStatus::parse(s.as_str()).unwrap(), s);
         }
         assert!(SyncStatus::parse("nonsense").is_err());
+    }
+
+    #[test]
+    fn file_selection_previews_only_is_qcamera() {
+        let sel = FileSelection::previews_only();
+        assert!(sel.includes(FileKind::QCamera));
+        for k in [
+            FileKind::FCamera,
+            FileKind::ECamera,
+            FileKind::DCamera,
+            FileKind::RLog,
+            FileKind::QLog,
+            FileKind::BootLog,
+            FileKind::Other,
+        ] {
+            assert!(!sel.includes(k), "{k:?} should not be selected");
+        }
+        // The lock marker is never a download target, even with everything on.
+        assert!(!FileSelection::everything().includes(FileKind::LockMarker));
+    }
+
+    #[test]
+    fn file_selection_everything_includes_all_downloadable() {
+        let sel = FileSelection::everything();
+        for k in [
+            FileKind::FCamera,
+            FileKind::ECamera,
+            FileKind::DCamera,
+            FileKind::QCamera,
+            FileKind::RLog,
+            FileKind::QLog,
+            FileKind::BootLog,
+            FileKind::Other,
+        ] {
+            assert!(sel.includes(k), "{k:?} should be selected");
+        }
+    }
+
+    #[test]
+    fn file_selection_csv_round_trip() {
+        for sel in [
+            FileSelection::NONE,
+            FileSelection::previews_only(),
+            FileSelection::everything(),
+            FileSelection {
+                fcamera: true,
+                rlog: true,
+                ..FileSelection::NONE
+            },
+        ] {
+            assert_eq!(FileSelection::parse(&sel.as_str()).unwrap(), sel);
+        }
+        // Canonical CSV form, sorted by the fixed kind order.
+        assert_eq!(
+            FileSelection {
+                qcamera: true,
+                fcamera: true,
+                rlog: true,
+                ..FileSelection::NONE
+            }
+            .as_str(),
+            "fcamera,qcamera,rlog"
+        );
+        // Unknown tokens are ignored; empty string => nothing.
+        assert_eq!(
+            FileSelection::parse("qcamera,bogus").unwrap(),
+            FileSelection::previews_only()
+        );
+        assert_eq!(FileSelection::parse("").unwrap(), FileSelection::NONE);
+    }
+
+    #[test]
+    fn file_selection_parses_legacy_presets() {
+        assert_eq!(
+            FileSelection::parse("previews_only").unwrap(),
+            FileSelection::previews_only()
+        );
+        assert_eq!(
+            FileSelection::parse("full_video_plus_logs").unwrap(),
+            FileSelection::everything()
+        );
+        assert!(FileSelection::parse("full_video").unwrap().fcamera);
     }
 }

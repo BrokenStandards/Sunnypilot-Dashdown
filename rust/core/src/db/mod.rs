@@ -4,14 +4,24 @@
 pub mod migrations;
 
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::{CoreError, Result};
 use crate::model::{
-    ConnMode, Device, Drive, FileKind, FileSelection, Segment, SegmentFile, SegmentName, SyncStatus,
+    ConnMode, Device, Drive, FileKind, FileSelection, JobState, Segment, SegmentFile, SegmentName,
+    SyncStatus,
 };
+
+/// Current wall-clock time in epoch seconds (for `download_job.updated_s`).
+fn now_s() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
 
 pub type Pool = r2d2::Pool<SqliteConnectionManager>;
 type PooledConn = r2d2::PooledConnection<SqliteConnectionManager>;
@@ -313,6 +323,174 @@ impl Repo {
         )?;
         Ok(())
     }
+
+    // ---- seg_file local state ---------------------------------------------
+
+    /// Mark one file complete: record its on-disk size and `download_state`.
+    /// Keyed by the natural tuple; resolves `segment_id` via a sub-select so
+    /// callers never juggle ids. A no-op if the seg_file row is absent.
+    pub fn set_file_complete(
+        &self,
+        device_id: i64,
+        route_id: &str,
+        segment_num: u32,
+        file_name: &str,
+        local_size: u64,
+    ) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE seg_file SET local_size=?1, download_state='complete' \
+             WHERE name=?2 AND segment_id=( \
+                SELECT id FROM segment WHERE device_id=?3 AND route_id=?4 AND segment_num=?5)",
+            params![
+                local_size as i64,
+                file_name,
+                device_id,
+                route_id,
+                segment_num as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    // ---- download jobs ----------------------------------------------------
+
+    /// Start (or restart) a drive's job row: state=running, progress reset.
+    pub fn upsert_job(
+        &self,
+        device_id: i64,
+        drive_key: &str,
+        files_total: u32,
+        bytes_total: u64,
+    ) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO download_job \
+                (device_id, drive_key, state, files_total, files_done, bytes_total, bytes_done, \
+                 error, updated_s) \
+             VALUES (?1,?2,'running',?3,0,?4,0,NULL,?5) \
+             ON CONFLICT(device_id, drive_key) DO UPDATE SET \
+                state='running', files_total=excluded.files_total, files_done=0, \
+                bytes_total=excluded.bytes_total, bytes_done=0, error=NULL, \
+                updated_s=excluded.updated_s",
+            params![
+                device_id,
+                drive_key,
+                files_total as i64,
+                bytes_total as i64,
+                now_s()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Move a job to a new state (terminal states carry an optional error).
+    pub fn set_job_state(
+        &self,
+        device_id: i64,
+        drive_key: &str,
+        state: JobState,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE download_job SET state=?3, error=?4, updated_s=?5 \
+             WHERE device_id=?1 AND drive_key=?2",
+            params![device_id, drive_key, state.as_str(), error, now_s()],
+        )?;
+        Ok(())
+    }
+
+    /// Set absolute progress counters for a running job.
+    pub fn bump_job_progress(
+        &self,
+        device_id: i64,
+        drive_key: &str,
+        files_done: u32,
+        bytes_done: u64,
+    ) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE download_job SET files_done=?3, bytes_done=?4, updated_s=?5 \
+             WHERE device_id=?1 AND drive_key=?2",
+            params![
+                device_id,
+                drive_key,
+                files_done as i64,
+                bytes_done as i64,
+                now_s()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_job(&self, device_id: i64, drive_key: &str) -> Result<Option<JobRow>> {
+        let conn = self.conn()?;
+        let raw = conn
+            .query_row(
+                "SELECT device_id, drive_key, state, files_total, files_done, bytes_total, \
+                    bytes_done, error, updated_s \
+                 FROM download_job WHERE device_id=?1 AND drive_key=?2",
+                params![device_id, drive_key],
+                map_raw_job,
+            )
+            .optional()?;
+        raw.map(raw_to_job).transpose()
+    }
+}
+
+/// A `download_job` row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobRow {
+    pub device_id: i64,
+    pub drive_key: String,
+    pub state: JobState,
+    pub files_total: u32,
+    pub files_done: u32,
+    pub bytes_total: u64,
+    pub bytes_done: u64,
+    pub error: Option<String>,
+    pub updated_s: i64,
+}
+
+struct RawJob {
+    device_id: i64,
+    drive_key: String,
+    state: String,
+    files_total: i64,
+    files_done: i64,
+    bytes_total: i64,
+    bytes_done: i64,
+    error: Option<String>,
+    updated_s: i64,
+}
+
+fn map_raw_job(r: &rusqlite::Row) -> rusqlite::Result<RawJob> {
+    Ok(RawJob {
+        device_id: r.get(0)?,
+        drive_key: r.get(1)?,
+        state: r.get(2)?,
+        files_total: r.get(3)?,
+        files_done: r.get(4)?,
+        bytes_total: r.get(5)?,
+        bytes_done: r.get(6)?,
+        error: r.get(7)?,
+        updated_s: r.get(8)?,
+    })
+}
+
+fn raw_to_job(r: RawJob) -> Result<JobRow> {
+    Ok(JobRow {
+        device_id: r.device_id,
+        drive_key: r.drive_key,
+        state: JobState::parse(&r.state)?,
+        files_total: r.files_total as u32,
+        files_done: r.files_done as u32,
+        bytes_total: r.bytes_total as u64,
+        bytes_done: r.bytes_done as u64,
+        error: r.error,
+        updated_s: r.updated_s,
+    })
 }
 
 /// Fetch one route's segments whose index falls in `[first, last]`, with files.

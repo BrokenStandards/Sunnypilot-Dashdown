@@ -2,7 +2,7 @@
 
 use dashdown_core::db::Repo;
 use dashdown_core::model::{
-    ConnMode, Device, FileKind, FileSelection, Segment, SegmentFile, SegmentName,
+    ConnMode, Device, FileKind, FileSelection, JobState, Segment, SegmentFile, SegmentName,
 };
 
 fn sample_device() -> Device {
@@ -16,7 +16,7 @@ fn sample_device() -> Device {
         active_mode: ConnMode::Hotspot,
         password: Some("hunter2".into()),
         auto_sync: true,
-        file_selection: FileSelection::PreviewsOnly,
+        file_selection: FileSelection::previews_only(),
         retention_max_minutes: Some(120),
         auto_delete_from_comma: false,
         auto_delete_min_age_min: 60,
@@ -65,14 +65,14 @@ fn sample_segments() -> Vec<Segment> {
 #[test]
 fn migrates_and_round_trips() {
     let repo = Repo::open_in_memory().unwrap();
-    assert_eq!(repo.schema_version().unwrap(), 2);
+    assert_eq!(repo.schema_version().unwrap(), 3);
 
     let id = repo.insert_device(&sample_device()).unwrap();
     let got = repo.get_device(id).unwrap().unwrap();
     assert_eq!(got.id, id);
     assert_eq!(got.name, "Comma 3X");
     assert_eq!(got.active_mode, ConnMode::Hotspot);
-    assert_eq!(got.file_selection, FileSelection::PreviewsOnly);
+    assert_eq!(got.file_selection, FileSelection::previews_only());
     assert_eq!(got.port, 3923);
     assert_eq!(got.retention_max_minutes, Some(120));
     assert_eq!(repo.list_devices().unwrap().len(), 1);
@@ -93,13 +93,64 @@ fn reopen_is_idempotent_and_persists() {
 
     let id = {
         let repo = Repo::open(&path).unwrap();
-        assert_eq!(repo.schema_version().unwrap(), 2);
+        assert_eq!(repo.schema_version().unwrap(), 3);
         repo.insert_device(&sample_device()).unwrap()
     };
 
     // Re-open the same file: migrations must NOT re-run, data must persist.
     let repo = Repo::open(&path).unwrap();
-    assert_eq!(repo.schema_version().unwrap(), 2);
+    assert_eq!(repo.schema_version().unwrap(), 3);
     assert!(repo.get_device(id).unwrap().is_some());
     assert_eq!(repo.list_devices().unwrap().len(), 1);
+}
+
+#[test]
+fn download_job_round_trips() {
+    let repo = Repo::open_in_memory().unwrap();
+    let dev = repo.insert_device(&sample_device()).unwrap();
+    let key = "000001a3--c20ba54385--0";
+
+    assert!(repo.get_job(dev, key).unwrap().is_none());
+
+    repo.upsert_job(dev, key, 5, 17_000).unwrap();
+    let j = repo.get_job(dev, key).unwrap().unwrap();
+    assert_eq!(j.state, JobState::Running);
+    assert_eq!(j.files_total, 5);
+    assert_eq!(j.bytes_total, 17_000);
+    assert_eq!(j.files_done, 0);
+
+    repo.bump_job_progress(dev, key, 3, 9_000).unwrap();
+    repo.set_job_state(dev, key, JobState::Complete, None)
+        .unwrap();
+    let j = repo.get_job(dev, key).unwrap().unwrap();
+    assert_eq!(j.state, JobState::Complete);
+    assert_eq!(j.files_done, 3);
+    assert_eq!(j.bytes_done, 9_000);
+
+    // Failure carries an error string.
+    repo.set_job_state(dev, key, JobState::Failed, Some("boom"))
+        .unwrap();
+    let j = repo.get_job(dev, key).unwrap().unwrap();
+    assert_eq!(j.state, JobState::Failed);
+    assert_eq!(j.error.as_deref(), Some("boom"));
+
+    // Re-running resets to a fresh running job.
+    repo.upsert_job(dev, key, 2, 100).unwrap();
+    let j = repo.get_job(dev, key).unwrap().unwrap();
+    assert_eq!(j.state, JobState::Running);
+    assert_eq!(j.files_done, 0);
+    assert_eq!(j.error, None);
+}
+
+#[test]
+fn set_file_complete_updates_seg_file() {
+    let repo = Repo::open_in_memory().unwrap();
+    let dev = repo.insert_device(&sample_device()).unwrap();
+    repo.upsert_segments(dev, &sample_segments()).unwrap();
+
+    // Marking an existing file complete succeeds; a missing one is a no-op.
+    repo.set_file_complete(dev, "000001a3--c20ba54385", 0, "qcamera.ts", 1200)
+        .unwrap();
+    repo.set_file_complete(dev, "000001a3--c20ba54385", 0, "nope.bin", 1)
+        .unwrap();
 }
