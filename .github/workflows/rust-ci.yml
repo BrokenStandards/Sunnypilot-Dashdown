@@ -1,0 +1,66 @@
+name: rust-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  core:
+    name: build · test · cross-compile · bindgen
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+
+      # rust-toolchain.toml pins the channel, components, and all targets;
+      # `rustup show` provisions them on the runner.
+      - name: Provision toolchain
+        run: rustup show
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test (host)
+        run: cargo test --workspace
+
+      - name: Set up Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          add-to-path: false
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Build Android cdylib (4 ABIs)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -t x86 -o target/jniLibs build -p dashdown-core --release
+
+      - name: Build iOS staticlib (device + simulator)
+        run: |
+          cargo rustc -p dashdown-core --lib --release --crate-type staticlib --target aarch64-apple-ios
+          cargo rustc -p dashdown-core --lib --release --crate-type staticlib --target aarch64-apple-ios-sim
+
+      - name: Generate + verify bindings (Kotlin + Swift)
+        run: |
+          bash tools/gen-bindings.sh
+          kt=target/bindings/kotlin/uniffi/dashdown_core/dashdown_core.kt
+          sw=target/bindings/swift/dashdown_core.swift
+          test -f "$kt" && test -f "$sw"
+          grep -q 'func ping('   "$sw"
+          grep -q 'func version(' "$sw"
+          grep -q 'pingAsync'    "$sw"
+          grep -q 'pingAsync'    "$kt"
+          grep -q 'version'      "$kt"
+          echo "bindings smoke OK"

@@ -1,0 +1,12 @@
+[workspace]
+members = ["rust/core", "rust/bindgen"]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+uniffi = "0.31"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

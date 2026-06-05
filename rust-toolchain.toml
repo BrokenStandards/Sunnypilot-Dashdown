@@ -1,0 +1,16 @@
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]
+targets = [
+  # iOS (linked into the .xcframework via xtool in Phase B)
+  "aarch64-apple-ios",
+  "aarch64-apple-ios-sim",
+  "x86_64-apple-ios",
+  # Android (cdylib .so via cargo-ndk)
+  "aarch64-linux-android",
+  "armv7-linux-androideabi",
+  "x86_64-linux-android",
+  "i686-linux-android",
+  # Host (tests)
+  "x86_64-unknown-linux-gnu",
+]
