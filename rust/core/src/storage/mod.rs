@@ -91,6 +91,27 @@ impl MirrorStore {
         Ok(PartFile { file, part, final_ })
     }
 
+    /// Remove the committed file and any stray `.part` for `rel`. Idempotent —
+    /// a missing file is success (mirrors [`PartFile::abort`]). Used by retention
+    /// to reclaim local space file-by-file.
+    pub async fn remove_file(&self, rel: &str) -> Result<()> {
+        remove_if_exists(&self.final_path(rel)?).await?;
+        remove_if_exists(&self.part_path(rel)?).await
+    }
+
+    /// Recursively remove a whole segment directory by its mirror-relative dir
+    /// path (e.g. `realdata/<seg>/`). Idempotent; rejects `..` traversal. Used by
+    /// retention to drop an entire pruned drive's footage at once.
+    pub async fn remove_dir(&self, rel_dir: &str) -> Result<()> {
+        let dir = paths::safe_join(&self.root, rel_dir)
+            .ok_or_else(|| CoreError::Io(format!("path traversal rejected: {rel_dir}")))?;
+        match fs::remove_dir_all(&dir).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Convenience: write `bytes` to `rel` and commit atomically (tests and the
     /// M4 non-streaming path). Shares the durability path with streamed writes.
     pub async fn write_all(&self, rel: &str, bytes: &[u8]) -> Result<()> {
@@ -144,11 +165,16 @@ impl PartFile {
     pub async fn abort(self) -> Result<()> {
         let PartFile { file, part, .. } = self;
         drop(file);
-        match fs::remove_file(&part).await {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e.into()),
-        }
+        remove_if_exists(&part).await
+    }
+}
+
+/// Remove a file, treating "not found" as success (idempotent delete).
+async fn remove_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -226,5 +252,56 @@ mod tests {
         let (_d, store) = store();
         assert!(store.create_part("../escape").await.is_err());
         assert!(store.final_path("../escape").is_err());
+    }
+
+    #[tokio::test]
+    async fn remove_file_deletes_final_and_part_idempotently() {
+        let (_d, store) = store();
+        // Missing file → Ok (idempotent).
+        store.remove_file(REL).await.unwrap();
+
+        // Place both a committed file and a stray `.part`; remove clears both.
+        store.write_all(REL, b"data").await.unwrap();
+        let mut pf = store.create_part(REL).await.unwrap();
+        pf.writer().write_all(b"x").await.unwrap();
+        drop(pf); // leaves a `.part` behind
+        assert!(store.is_complete(REL));
+        assert!(store.part_path(REL).unwrap().is_file());
+
+        store.remove_file(REL).await.unwrap();
+        assert!(!store.is_complete(REL));
+        assert!(!store.part_path(REL).unwrap().exists());
+    }
+
+    #[tokio::test]
+    async fn remove_dir_is_recursive_and_idempotent() {
+        let (_d, store) = store();
+        const SEG_DIR: &str = "realdata/000001a3--c20ba54385--0/";
+        // Missing dir → Ok.
+        store.remove_dir(SEG_DIR).await.unwrap();
+
+        store.write_all(REL, b"data").await.unwrap();
+        store
+            .write_all("realdata/000001a3--c20ba54385--0/rlog.zst", b"log")
+            .await
+            .unwrap();
+        let seg_path = store
+            .final_path(REL)
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        assert!(seg_path.is_dir());
+
+        store.remove_dir(SEG_DIR).await.unwrap();
+        assert!(!seg_path.exists());
+        assert!(!store.is_complete(REL));
+    }
+
+    #[tokio::test]
+    async fn removal_rejects_traversal() {
+        let (_d, store) = store();
+        assert!(store.remove_file("../escape").await.is_err());
+        assert!(store.remove_dir("../escape/").await.is_err());
     }
 }

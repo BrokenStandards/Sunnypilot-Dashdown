@@ -215,7 +215,11 @@ impl Repo {
 
     /// Replace the device's drive set with `drives`: upsert each (updating only
     /// the *derived* columns, leaving `preserved`/`sync_state` intact) and prune
-    /// any drive whose `drive_key` is no longer present. One transaction.
+    /// vanished drives. Pruning keeps any drive that still holds local data
+    /// (`sync_state` complete/partial/downloading) or is `preserved` — so a drive
+    /// deliberately deleted from the comma (M6 auto-delete) but mirrored locally
+    /// stays in the library; only purely-remote, unpinned drives are dropped.
+    /// One transaction.
     pub fn replace_drives(&self, device_id: i64, drives: &[Drive]) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
@@ -243,13 +247,19 @@ impl Repo {
                 ],
             )?;
         }
-        // Prune drives that disappeared (preserved/sync_state go with them).
+        // Prune vanished drives, but keep any with local data or a user pin
+        // (purely-remote, unpinned drives only).
+        const KEEP_LOCAL: &str = "preserved=0 AND sync_state IN ('not_downloaded','failed')";
         if drives.is_empty() {
-            tx.execute("DELETE FROM drive WHERE device_id=?1", params![device_id])?;
+            tx.execute(
+                &format!("DELETE FROM drive WHERE device_id=?1 AND {KEEP_LOCAL}"),
+                params![device_id],
+            )?;
         } else {
             let placeholders = vec!["?"; drives.len()].join(",");
             let sql = format!(
-                "DELETE FROM drive WHERE device_id=? AND drive_key NOT IN ({placeholders})"
+                "DELETE FROM drive WHERE device_id=? AND drive_key NOT IN ({placeholders}) \
+                 AND {KEEP_LOCAL}"
             );
             let mut p: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(drives.len() + 1);
             p.push(&device_id);

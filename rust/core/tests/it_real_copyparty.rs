@@ -95,6 +95,20 @@ impl Drop for Killer {
 /// listing. Returns `None` (the caller should SKIP) when no launcher is found or
 /// the server doesn't come up. The caller keeps the `Fixture` alive.
 async fn boot_copyparty(fixture: &Fixture) -> Option<(Killer, CopypartyClient)> {
+    boot_copyparty_with(fixture, "r").await
+}
+
+/// Boot real copyparty with read+delete (`rwd`) so the M6 DELETE path can be
+/// verified against the authoritative server.
+async fn boot_copyparty_writable(fixture: &Fixture) -> Option<(Killer, CopypartyClient)> {
+    boot_copyparty_with(fixture, "rwd").await
+}
+
+/// Boot copyparty with the given volume flags (e.g. `r`, `rwd`).
+async fn boot_copyparty_with(
+    fixture: &Fixture,
+    volflags: &str,
+) -> Option<(Killer, CopypartyClient)> {
     let launcher = detect_launcher()?;
     let port = free_port();
     let mut cmd = launcher.command();
@@ -105,7 +119,7 @@ async fn boot_copyparty(fixture: &Fixture) -> Option<(Killer, CopypartyClient)> 
         &port.to_string(),
         "-q",
         "-v",
-        &format!("{}:/:r", fixture.path().display()),
+        &format!("{}:/:{}", fixture.path().display(), volflags),
     ])
     .stdout(Stdio::null())
     .stderr(Stdio::null());
@@ -196,4 +210,35 @@ async fn real_copyparty_resumes_partial_download() {
 
     let got = std::fs::read(mirror.final_path(QCAMERA).unwrap()).unwrap();
     assert_eq!(got, full, "resumed file matches the original bytes");
+}
+
+/// Authoritative M6 DELETE verification: against a writable real copyparty,
+/// recursively delete a whole segment directory and confirm a re-list no longer
+/// shows it — verifying the WebDAV `DELETE` endpoint, 200 status, and recursive
+/// directory removal our auto-delete-from-comma relies on.
+#[tokio::test]
+async fn real_copyparty_delete_removes_segment_dir() {
+    let fixture = fixtures::single_drive();
+    let Some((_killer, client)) = boot_copyparty_writable(&fixture).await else {
+        eprintln!("SKIP it_real_copyparty: copyparty not available");
+        return;
+    };
+    assert_eq!(
+        client.list_segments("realdata/").await.unwrap().len(),
+        3,
+        "single_drive starts with 3 segments"
+    );
+
+    // Recursive directory delete (the whole segment) → real copyparty 200 OK.
+    client
+        .delete("realdata/000001a3--c20ba54385--0/")
+        .await
+        .unwrap();
+
+    let segs = client.list_segments("realdata/").await.unwrap();
+    assert_eq!(segs.len(), 2, "deleted segment is gone");
+    assert!(
+        segs.iter().all(|s| s.name.segment_num != 0),
+        "segment 0 removed; 1 and 2 remain"
+    );
 }
