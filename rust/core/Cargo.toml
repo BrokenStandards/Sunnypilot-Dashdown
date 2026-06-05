@@ -1,0 +1,13 @@
+[package]
+name = "dashdown-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "dashdown_core"
+crate-type = ["cdylib", "staticlib", "lib"]
+
+[dependencies]
+uniffi = { workspace = true, features = ["tokio"] }
+tokio = { workspace = true }
