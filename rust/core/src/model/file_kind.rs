@@ -3,7 +3,7 @@
 /// The kind of a file inside a segment directory. sunnypilot writes `.zst`
 /// logs (legacy `.bz2`), HEVC camera streams, a `qcamera.ts` preview, and a
 /// transient `rlog.lock` marker while the segment is still recording.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum FileKind {
     FCamera,    // fcamera.hevc — road camera
     ECamera,    // ecamera.hevc — wide road camera

@@ -53,14 +53,11 @@ impl ProgressSink for Recorder {
     fn on_progress(&self, p: DownloadProgress) {
         self.progress.lock().unwrap().push(p);
     }
-    fn on_completed(&self, drive_key: &str) {
-        self.completed.lock().unwrap().push(drive_key.to_string());
+    fn on_completed(&self, drive_key: String) {
+        self.completed.lock().unwrap().push(drive_key);
     }
-    fn on_failed(&self, drive_key: &str, error: &str) {
-        self.failed
-            .lock()
-            .unwrap()
-            .push((drive_key.to_string(), error.to_string()));
+    fn on_failed(&self, drive_key: String, error: String) {
+        self.failed.lock().unwrap().push((drive_key, error));
     }
 }
 

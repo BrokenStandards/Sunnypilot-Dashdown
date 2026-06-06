@@ -25,16 +25,18 @@ pub enum JobOutcome {
     Failed(String),
 }
 
-/// Implemented by the native layer (M8) to receive download progress. Plain
-/// Rust trait for now; becomes a UniFFI callback interface at the FFI boundary.
+/// Implemented by the native layer to receive download progress. Exported as a
+/// UniFFI foreign trait (M8) so Swift/Kotlin can implement it; foreign-trait
+/// methods take owned `String` (not `&str`).
+#[uniffi::export(with_foreign)]
 pub trait ProgressSink: Send + Sync {
     fn on_progress(&self, p: DownloadProgress);
-    fn on_completed(&self, drive_key: &str);
-    fn on_failed(&self, drive_key: &str, error: &str);
+    fn on_completed(&self, drive_key: String);
+    fn on_failed(&self, drive_key: String, error: String);
 }
 
 /// A progress snapshot for one drive download (per-file granularity in M4).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct DownloadProgress {
     pub drive_key: String,
     pub files_done: u32,

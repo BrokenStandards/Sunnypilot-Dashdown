@@ -9,7 +9,7 @@ use crate::error::{CoreError, Result};
 /// (e.g. `000001a3--c20ba54385--0`); the route id carries no timestamp. This
 /// parser keys only on the trailing numeric segment index, so it also tolerates
 /// the legacy comma-cloud form `dongleid|YYYY-MM-DD--HH-MM-SS--N`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Record)]
 pub struct SegmentName {
     pub route_id: String,
     pub segment_num: u32,

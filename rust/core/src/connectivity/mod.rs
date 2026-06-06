@@ -25,7 +25,7 @@ pub async fn tcp_reachable(host: &str, port: u16, timeout: Duration) -> bool {
 
 /// Result of a connectivity check for one device (M8's `check_connectivity`
 /// returns this). `dot` is derived from `reachable` + `downloading`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
 pub struct DeviceConnectivity {
     pub dot: ConnDot,
     pub reachable: bool,
