@@ -29,6 +29,8 @@ class DrivesListViewModel(private val repo: DashdownRepository, private val devi
 
   init {
     loadOffline()
+    // A download finishing (complete/failed) changes sync state — reclassify from disk.
+    viewModelScope.launch { repo.terminalEvents.collect { loadOffline() } }
   }
 
   /** Fast, network-free load that reclassifies sync state from the local mirror. */

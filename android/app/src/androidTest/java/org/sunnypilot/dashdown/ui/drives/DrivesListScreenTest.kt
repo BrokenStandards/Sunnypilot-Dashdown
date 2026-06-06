@@ -44,7 +44,7 @@ class DrivesListScreenTest {
     rule.setContent {
       DashdownTheme {
         DrivesListScreen(
-            DrivesUiState(drives = drives, loading = false), emptyMap(), {}, {}, {}, {})
+            DrivesUiState(drives = drives, loading = false), emptyMap(), {}, {}, {}, {}, {}, {})
       }
     }
     rule.onNodeWithTag("drive_row_000001a3--c20ba54385--0").assertExists()
@@ -56,7 +56,9 @@ class DrivesListScreenTest {
   @Test
   fun showsEmptyState() {
     rule.setContent {
-      DashdownTheme { DrivesListScreen(DrivesUiState(loading = false), emptyMap(), {}, {}, {}, {}) }
+      DashdownTheme {
+        DrivesListScreen(DrivesUiState(loading = false), emptyMap(), {}, {}, {}, {}, {}, {})
+      }
     }
     rule.onNodeWithText("No drives yet", substring = true).assertExists()
   }
