@@ -4,7 +4,14 @@ use thiserror::Error;
 
 /// Errors produced by the core engine. Variants carry `String` payloads (not
 /// foreign error types) so they stay FFI-friendly when exposed in M8.
-#[derive(Debug, Error)]
+///
+/// `flat_error`: the native side receives a single human-readable message per
+/// error — the `thiserror` `Display` string (with its category prefix, and the
+/// descriptive text for data-less variants like `AuthRequired`/`Forbidden`).
+/// The rich (default) derive would instead lower only each variant's fields,
+/// dropping the prefixes and leaving the data-less variants textless.
+#[derive(Debug, Error, uniffi::Error)]
+#[uniffi(flat_error)]
 pub enum CoreError {
     #[error("http error: {0}")]
     Http(String),

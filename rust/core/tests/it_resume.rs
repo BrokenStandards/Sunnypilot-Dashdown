@@ -50,8 +50,8 @@ impl ProgressSink for Recorder {
     fn on_progress(&self, p: DownloadProgress) {
         self.progress.lock().unwrap().push(p);
     }
-    fn on_completed(&self, _drive_key: &str) {}
-    fn on_failed(&self, _drive_key: &str, _error: &str) {}
+    fn on_completed(&self, _drive_key: String) {}
+    fn on_failed(&self, _drive_key: String, _error: String) {}
 }
 impl Recorder {
     /// Names of files actually fetched (progress events with `current_file=Some`).

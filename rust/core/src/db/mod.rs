@@ -123,6 +123,42 @@ impl Repo {
         raws?.into_iter().map(raw_to_device).collect()
     }
 
+    /// Update all mutable columns of an existing device (identity + settings).
+    pub fn update_device(&self, d: &Device) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE device SET name=?2, dongle_label=?3, hotspot_ip=?4, wifi_ip=?5, port=?6, \
+                active_mode=?7, password=?8, auto_sync=?9, file_selection=?10, \
+                retention_max_minutes=?11, auto_delete_from_comma=?12, auto_delete_min_age_min=?13 \
+             WHERE id=?1",
+            params![
+                d.id,
+                d.name,
+                d.dongle_label,
+                d.hotspot_ip,
+                d.wifi_ip,
+                d.port,
+                d.active_mode.as_str(),
+                d.password,
+                d.auto_sync,
+                d.file_selection.as_str(),
+                d.retention_max_minutes,
+                d.auto_delete_from_comma,
+                d.auto_delete_min_age_min,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Delete a device. Child rows (drive/segment/seg_file/download_job) are
+    /// removed by `ON DELETE CASCADE` (foreign_keys is ON). Local mirror files
+    /// are cleaned separately by the caller (`AppCore::remove_device`).
+    pub fn delete_device(&self, id: i64) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute("DELETE FROM device WHERE id=?1", params![id])?;
+        Ok(())
+    }
+
     // ---- segments + files -------------------------------------------------
 
     /// Insert or update the given segments (and their files) for a device.
@@ -302,6 +338,15 @@ impl Repo {
             });
         }
         Ok(out)
+    }
+
+    /// A single hydrated drive by key (or `None`). Reuses `get_drives` + filter —
+    /// the drive set per device is small, so a dedicated query isn't worth it.
+    pub fn get_drive(&self, device_id: i64, drive_key: &str) -> Result<Option<Drive>> {
+        Ok(self
+            .get_drives(device_id)?
+            .into_iter()
+            .find(|d| d.drive_key == drive_key))
     }
 
     /// Set a drive's `preserved` pin (M6 behavior; the setter exists from M2).

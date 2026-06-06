@@ -9,6 +9,15 @@ pub fn secs_to_ms(secs: i64) -> i64 {
     secs.saturating_mul(1000)
 }
 
+/// Current wall-clock time in epoch milliseconds (the age/now source for the
+/// retention + auto-delete guards driven by `AppCore::run_maintenance`).
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,7 +7,7 @@ pub mod download_job;
 pub mod resume;
 pub mod retention;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub use tokio_util::sync::CancellationToken;
@@ -28,8 +28,8 @@ use crate::storage::{
 };
 
 /// Segments path under each device's copyparty root.
-/// (TODO M8: make device-configurable if a device serves realdata elsewhere.)
-const REALDATA_REL: &str = "realdata/";
+/// (TODO: make device-configurable if a device serves realdata elsewhere.)
+pub const REALDATA_REL: &str = "realdata/";
 
 /// One selected file to (maybe) download.
 struct Item {
@@ -54,10 +54,21 @@ pub struct SyncEngine {
 
 /// A cancellable handle to a running drive download. The native layer owns the
 /// task lifecycle (per the background contract); this only signals cancellation.
+/// A UniFFI Object (M8) so Swift/Kotlin can hold it and call `cancel()`.
+#[derive(uniffi::Object)]
 pub struct SyncHandle {
     token: CancellationToken,
 }
 
+impl SyncHandle {
+    /// Build a handle around an existing token (used by `AppCore`, which spawns
+    /// the download on its own runtime and keeps the token to cancel it).
+    pub(crate) fn new(token: CancellationToken) -> Self {
+        Self { token }
+    }
+}
+
+#[uniffi::export]
 impl SyncHandle {
     pub fn cancel(&self) {
         self.token.cancel();
@@ -73,6 +84,12 @@ impl SyncEngine {
             repo,
             mirror_root: mirror_root.into(),
         }
+    }
+
+    /// The mirror root this engine writes under (per-device subdirs hang off it).
+    /// Exposed for `AppCore`'s `export_drive_zip` + `remove_device` cleanup.
+    pub fn mirror_root(&self) -> &Path {
+        &self.mirror_root
     }
 
     fn client_for(device: &Device) -> Result<CopypartyClient> {
@@ -471,9 +488,9 @@ impl SyncEngine {
         })
         .await?;
         match &t {
-            Terminal::Complete => sink.on_completed(drive_key),
+            Terminal::Complete => sink.on_completed(drive_key.to_string()),
             Terminal::Canceled => {}
-            Terminal::Failed(e) => sink.on_failed(drive_key, e),
+            Terminal::Failed(e) => sink.on_failed(drive_key.to_string(), e.clone()),
         }
         Ok(outcome)
     }

@@ -10,7 +10,10 @@ pub mod copyparty_client;
 pub mod db;
 pub mod drive_grouping;
 pub mod error;
+pub mod ffi;
+pub mod logging;
 pub mod model;
+pub mod settings;
 pub mod storage;
 pub mod sync_engine;
 

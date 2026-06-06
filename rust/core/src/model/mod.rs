@@ -12,7 +12,7 @@ pub use ids::SegmentName;
 use crate::error::{CoreError, Result};
 
 /// Which IP a device is currently reached on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ConnMode {
     Hotspot,
     Wifi,
@@ -38,7 +38,7 @@ impl ConnMode {
 /// (`check_connectivity`) from TCP reachability + active-download state — never
 /// persisted, so unlike the other model enums it has no `parse()` (no TEXT
 /// column round-trips through it).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ConnDot {
     /// Reachable and idle.
     Green,
@@ -62,7 +62,7 @@ impl ConnDot {
 /// Audio is muxed into `qcamera.ts` upstream (sunnypilot `RecordAudio`), so it
 /// rides with the `qcamera` toggle rather than being a separate file. Persisted
 /// as a sorted CSV of the enabled kind tokens in `device.file_selection`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
 pub struct FileSelection {
     pub fcamera: bool,
     pub ecamera: bool,
@@ -188,7 +188,7 @@ impl Default for FileSelection {
 
 /// Local download state of a single file. `local_size`/state are populated by
 /// the mirror/sync engine in M3–M5; until then files default to `Missing`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum DownloadState {
     Missing,
     InProgress,
@@ -219,7 +219,7 @@ impl DownloadState {
 /// Sync state of a whole drive against the active file selection. Stored in the
 /// `drive` table from M2; only `NotDownloaded` is produced until the sync engine
 /// (M5) computes the real value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum SyncStatus {
     NotDownloaded,
     Partial,
@@ -252,7 +252,7 @@ impl SyncStatus {
 
 /// State of a drive download job (`download_job.state`). A drive download is
 /// either in progress or in a terminal state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum JobState {
     Running,
     Complete,
@@ -281,7 +281,7 @@ impl JobState {
 }
 
 /// One file inside a segment, as seen on the remote (copyparty) side.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct SegmentFile {
     pub kind: FileKind,
     pub name: String,
@@ -291,7 +291,7 @@ pub struct SegmentFile {
 
 /// One 1-minute segment: its decomposed name, its files, and whether it is
 /// still recording (an `rlog.lock` was present in the listing).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct Segment {
     pub name: SegmentName,
     pub files: Vec<SegmentFile>,
@@ -314,7 +314,7 @@ impl Segment {
 /// (see `drive_grouping::group_segments`). Owns its segments so callers/tests
 /// can expand it; the summary fields are derived from `segments` and are only
 /// ever set by `group_segments` or DB hydration, so they stay consistent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct Drive {
     /// First segment's `dir_name()` — stable as the drive grows.
     pub drive_key: String,
@@ -339,7 +339,7 @@ pub struct Drive {
 /// A configured Comma device. Connection fields are exercised in M1; the
 /// settings fields (auto-sync, retention, auto-delete) are stored now but their
 /// behavior lands in later milestones.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct Device {
     pub id: i64, // 0 = not yet persisted
     pub name: String,

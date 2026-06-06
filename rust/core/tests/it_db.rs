@@ -105,6 +105,47 @@ fn reopen_is_idempotent_and_persists() {
 }
 
 #[test]
+fn update_device_changes_mutable_fields() {
+    let repo = Repo::open_in_memory().unwrap();
+    let id = repo.insert_device(&sample_device()).unwrap();
+    let mut d = repo.get_device(id).unwrap().unwrap();
+    d.name = "renamed".into();
+    d.active_mode = ConnMode::Wifi;
+    d.auto_sync = false;
+    d.retention_max_minutes = None;
+    repo.update_device(&d).unwrap();
+
+    let got = repo.get_device(id).unwrap().unwrap();
+    assert_eq!(got.name, "renamed");
+    assert_eq!(got.active_mode, ConnMode::Wifi);
+    assert!(!got.auto_sync);
+    assert_eq!(got.retention_max_minutes, None);
+}
+
+#[test]
+fn delete_device_cascades_to_children() {
+    use dashdown_core::drive_grouping::group_segments;
+    let repo = Repo::open_in_memory().unwrap();
+    let id = repo.insert_device(&sample_device()).unwrap();
+    let segs = sample_segments();
+    repo.upsert_segments(id, &segs).unwrap();
+    let drives = group_segments(segs);
+    repo.replace_drives(id, &drives).unwrap();
+    let dk = drives[0].drive_key.clone();
+    repo.upsert_job(id, &dk, 1, 100).unwrap();
+    assert!(!repo.get_drives(id).unwrap().is_empty());
+
+    repo.delete_device(id).unwrap();
+    assert!(repo.get_device(id).unwrap().is_none());
+    assert!(repo.get_drives(id).unwrap().is_empty(), "drives cascade");
+    assert!(
+        repo.get_segments(id).unwrap().is_empty(),
+        "segments cascade"
+    );
+    assert!(repo.get_job(id, &dk).unwrap().is_none(), "jobs cascade");
+}
+
+#[test]
 fn download_job_round_trips() {
     let repo = Repo::open_in_memory().unwrap();
     let dev = repo.insert_device(&sample_device()).unwrap();

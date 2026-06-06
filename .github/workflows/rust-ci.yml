@@ -66,9 +66,22 @@ jobs:
           kt=target/bindings/kotlin/uniffi/dashdown_core/dashdown_core.kt
           sw=target/bindings/swift/dashdown_core.swift
           test -f "$kt" && test -f "$sw"
+          # M0 smoke exports (still present).
           grep -q 'func ping('   "$sw"
-          grep -q 'func version(' "$sw"
           grep -q 'pingAsync'    "$sw"
           grep -q 'pingAsync'    "$kt"
-          grep -q 'version'      "$kt"
+          # M8 AppCore surface: assert the facade, objects, callbacks, error and a
+          # settings record generated in BOTH languages. Bare case-insensitive
+          # substrings tolerate decl-style differences (Swift `open func`, Kotlin
+          # backtick-quoted `addDevice`, Error->Exception rename).
+          for sym in AppCore addDevice listDevices syncNow startDriveDownload \
+                     checkConnectivity exportDriveZip runMaintenance SyncHandle cancel \
+                     ProgressSink LogSink CoreError DeviceSettings DriveSyncStatus; do
+            grep -qi "$sym" "$sw" || { echo "missing '$sym' in swift bindings"; exit 1; }
+            grep -qi "$sym" "$kt" || { echo "missing '$sym' in kotlin bindings"; exit 1; }
+          done
+          # The tokio-async export path must generate suspend funcs in Kotlin /
+          # async throws in Swift.
+          grep -qi 'suspend fun' "$kt" || { echo "no suspend funcs in kotlin"; exit 1; }
+          grep -qi 'async throws' "$sw" || { echo "no async throws in swift"; exit 1; }
           echo "bindings smoke OK"
