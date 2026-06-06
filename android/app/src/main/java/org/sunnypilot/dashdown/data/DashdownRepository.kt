@@ -1,5 +1,6 @@
 package org.sunnypilot.dashdown.data
 
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,6 +30,10 @@ class DashdownRepository(private val locator: ServiceLocator) {
   /** One-shot completed/failed events (cancellation emits nothing). */
   val terminalEvents: SharedFlow<TerminalEvent>
     get() = locator.progressBus.terminal
+
+  /** Mirror root the core writes to; used to resolve local file paths for playback. */
+  val mirrorRoot: File
+    get() = locator.mirrorRoot
 
   // --- Devices ---
   suspend fun listDevices(): List<Device> = io { locator.core.listDevices() }
