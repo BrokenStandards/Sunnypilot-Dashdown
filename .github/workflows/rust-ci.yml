@@ -38,6 +38,16 @@ jobs:
       - name: Test (host, incl. real-copyparty contract test)
         run: cargo test --workspace
 
+      # B0: the core must stay on the rustls *ring* provider so it cross-compiles
+      # to iOS/Android without aws-lc-rs (CMake/C). Fail if aws-lc-rs creeps back
+      # into the graph (incl. dev-deps).
+      - name: Assert aws-lc-rs is absent (ring-only)
+        run: |
+          if cargo tree -p dashdown-core -i aws-lc-rs >/dev/null 2>&1; then
+            echo "aws-lc-rs is back in the dependency graph (expected ring only)"; exit 1
+          fi
+          echo "ok: aws-lc-rs absent; rustls uses ring"
+
       - name: Set up Android NDK
         id: ndk
         uses: nttld/setup-ndk@v1
