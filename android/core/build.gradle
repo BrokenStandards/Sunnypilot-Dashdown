@@ -1,0 +1,94 @@
+plugins {
+    alias libs.plugins.androidLibrary
+    alias libs.plugins.jetbrainsKotlinAndroid
+    alias libs.plugins.ktfmt
+    // Automates the cargo cross-compile (cargo-ndk) integration.
+    alias libs.plugins.cargo.ndk
+}
+
+android {
+    namespace 'org.sunnypilot.dashdown.core'
+    compileSdk 36
+    ndkVersion "27.3.13750724"
+
+    defaultConfig {
+        minSdk 29
+        targetSdk 36
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        consumerProguardFiles "consumer-rules.pro"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+
+dependencies {
+    implementation libs.androidx.ktx
+    implementation libs.androidx.appcompat
+    // uniffi async bindings (suspend funcs) require kotlinx-coroutines.
+    implementation libs.kotlinx.coroutines.core
+
+    // Essential! UniFFI dictates the minimum supported JNA version.
+    // The TOML form is broken for `@aar`-classified deps (gradle/gradle#21267).
+    //noinspection UseTomlInstead
+    implementation 'net.java.dev.jna:jna:5.18.1@aar'
+
+    testImplementation libs.junit
+
+    androidTestImplementation libs.androidx.test.junit
+    androidTestImplementation libs.androidx.test.espresso
+    androidTestImplementation libs.kotlinx.coroutines.android
+}
+
+// cargo-ndk builds the per-ABI .so into core/src/main/jniLibs/<abi>/ from the
+// workspace at the repo root. B0 builds the device (arm64) + emulator (x86_64)
+// ABIs for speed; full 4-ABI release builds run in rust-ci.
+// NOTE: `module` is resolved by the plugin relative to the ROOT gradle project
+// (android/), so ".." reaches the repo-root workspace Cargo.toml. (The bindgen
+// Exec task below resolves its workingDir relative to THIS :core module, so it
+// uses "../.." to reach the same repo root.)
+cargoNdk {
+    module = ".."                                 // dir containing the workspace Cargo.toml
+    librariesNames = ["libdashdown_core.so"]
+    extraCargoBuildArguments = ["-p", "dashdown-core"]
+    targets = ["arm64", "x86_64"]
+}
+
+android.libraryVariants.all { variant ->
+    def bDir = layout.buildDirectory.dir("generated/source/uniffi/${variant.name}/java").get()
+    def generateBindings = tasks.register("generate${variant.name.capitalize()}UniFFIBindings", Exec) {
+        // Run from the workspace root and use the in-workspace bindgen crate
+        // (its uniffi version must match the core dep).
+        workingDir '../..'
+        commandLine 'cargo', 'run', '-p', 'dashdown-bindgen', '--bin', 'uniffi-bindgen', '--',
+                'generate',
+                '--library', 'android/core/src/main/jniLibs/arm64-v8a/libdashdown_core.so',
+                '--language', 'kotlin',
+                '--out-dir', bDir.asFile.absolutePath,
+                '--no-format'
+        dependsOn "buildCargoNdk${variant.name.capitalize()}"
+    }
+
+    variant.javaCompileProvider.get().dependsOn(generateBindings)
+    tasks.named("compile${variant.name.capitalize()}Kotlin").configure {
+        dependsOn generateBindings
+    }
+    tasks.named("connectedDebugAndroidTest").configure {
+        dependsOn generateBindings
+    }
+
+    def sourceSet = variant.sourceSets.find { it.name == variant.name }
+    sourceSet.java.srcDir layout.buildDirectory.file("generated/source/uniffi/${variant.name}/java")
+}

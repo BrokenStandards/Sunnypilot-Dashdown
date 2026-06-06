@@ -14,11 +14,13 @@
 
 # --- Android ----------------------------------------------------------------
 /android/.gradle
-/android/build
-/android/app/build
+/android/.kotlin
+/android/**/build/
 /android/local.properties
 /android/.idea
 /android/captures
+# cargo-ndk drops cross-compiled .so here; rebuilt every Gradle build.
+/android/core/src/main/jniLibs/
 
 # --- iOS / Swift ------------------------------------------------------------
 .build/
