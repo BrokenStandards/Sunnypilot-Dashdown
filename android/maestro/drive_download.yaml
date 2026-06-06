@@ -1,0 +1,51 @@
+# Maestro happy-path acceptance flow for the Dashdown Android shell.
+#
+# Prerequisites (host):
+#   cargo run -q -p mock-copyparty -- --fixture single_drive --port 8099 &
+#   adb reverse tcp:8099 tcp:8099
+#   adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+#
+# Run:  maestro test android/maestro/drive_download.yaml
+#
+# Selectors use Compose test tags exposed as resource-ids via `testTagsAsResourceId`
+# on the nav root. clearState wipes the index so the first device is id 1.
+appId: org.sunnypilot.dashdown
+---
+- launchApp:
+    clearState: true
+# Wait for the device list (the FAB is present regardless of load state / cold core build).
+- extendedWaitUntil:
+    visible:
+      id: "add_device_fab"
+    timeout: 15000
+
+# Add a device pointing at the host fixture (reached via adb reverse).
+- tapOn:
+    id: "add_device_fab"
+- tapOn:
+    id: "device_form_name"
+- inputText: "Mock Comma"
+- tapOn:
+    id: "device_form_hotspot_ip"
+- eraseText
+- inputText: "127.0.0.1"
+- tapOn:
+    id: "device_form_port"
+- eraseText
+- inputText: "8099"
+- hideKeyboard
+- tapOn:
+    id: "device_form_save"
+
+# Open the drives list. A fresh device auto-syncs online on first open.
+- tapOn:
+    id: "device_row_1"
+- extendedWaitUntil:
+    visible: "Download"
+    timeout: 20000
+
+# Download the first drive and wait for completion.
+- tapOn: "Download"
+- extendedWaitUntil:
+    visible: "Complete"
+    timeout: 30000

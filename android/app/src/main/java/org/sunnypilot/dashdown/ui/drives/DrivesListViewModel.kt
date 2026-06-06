@@ -28,7 +28,17 @@ class DrivesListViewModel(private val repo: DashdownRepository, private val devi
   val progress: StateFlow<Map<String, DriveProgress>> = repo.progress
 
   init {
-    loadOffline()
+    // First visit: show the local mirror immediately, then auto-sync online if it's empty (a
+    // freshly-added device has nothing locally yet, and pull-to-refresh can't help an empty list).
+    viewModelScope.launch {
+      try {
+        val offline = repo.listDrives(deviceId, offline = true)
+        _state.update { it.copy(drives = offline, loading = false, error = null) }
+        if (offline.isEmpty()) refreshOnline()
+      } catch (t: Throwable) {
+        _state.update { it.copy(loading = false, error = UiError.from(t).message) }
+      }
+    }
     // A download finishing (complete/failed) changes sync state — reclassify from disk.
     viewModelScope.launch { repo.terminalEvents.collect { loadOffline() } }
   }

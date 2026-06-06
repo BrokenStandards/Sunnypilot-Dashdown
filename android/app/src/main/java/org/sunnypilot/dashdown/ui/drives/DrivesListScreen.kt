@@ -108,33 +108,38 @@ fun DrivesListScreen(
             onRefresh = onRefresh,
             modifier = Modifier.fillMaxSize().padding(padding).testTag("drives_pull_refresh"),
         ) {
-          when {
-            state.loading && state.drives.isEmpty() ->
-                Box(Modifier.fillMaxSize()) {
-                  CircularProgressIndicator(Modifier.align(Alignment.Center))
-                }
-            state.drives.isEmpty() ->
-                Box(Modifier.fillMaxSize()) {
-                  Text(
-                      "No drives yet. Pull down to sync from the device.",
-                      modifier = Modifier.align(Alignment.Center).padding(24.dp),
-                      style = MaterialTheme.typography.bodyLarge,
-                  )
-                }
-            else ->
-                LazyColumn(Modifier.fillMaxSize()) {
-                  items(state.drives, key = { it.driveKey }) { drive ->
-                    DriveRow(
-                        drive = drive,
-                        live = progress[drive.driveKey],
-                        onClick = { onDriveClick(drive.driveKey) },
-                        onPreserve = { onPreserve(drive) },
-                        onDownload = { onDownload(drive) },
-                        onCancel = { onCancel(drive) },
+          if (state.loading && state.drives.isEmpty()) {
+            Box(Modifier.fillMaxSize()) {
+              CircularProgressIndicator(Modifier.align(Alignment.Center))
+            }
+          } else {
+            // Always a LazyColumn (even when empty) so the pull-to-refresh nested-scroll gesture
+            // registers; the empty message is a full-viewport item.
+            LazyColumn(Modifier.fillMaxSize()) {
+              if (state.drives.isEmpty()) {
+                item {
+                  Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        "No drives yet. Pull down to sync from the device.",
+                        modifier = Modifier.padding(24.dp),
+                        style = MaterialTheme.typography.bodyLarge,
                     )
-                    HorizontalDivider()
                   }
                 }
+              } else {
+                items(state.drives, key = { it.driveKey }) { drive ->
+                  DriveRow(
+                      drive = drive,
+                      live = progress[drive.driveKey],
+                      onClick = { onDriveClick(drive.driveKey) },
+                      onPreserve = { onPreserve(drive) },
+                      onDownload = { onDownload(drive) },
+                      onCancel = { onCancel(drive) },
+                  )
+                  HorizontalDivider()
+                }
+              }
+            }
           }
           state.error?.let { err ->
             Text(
