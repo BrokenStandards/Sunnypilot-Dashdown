@@ -86,6 +86,9 @@ impl AppCore {
             .map_err(|e| CoreError::Io(format!("runtime build: {e}")))?;
         let handle = runtime.handle().clone();
         crate::logging::install();
+        // Install the ring crypto provider before any reqwest client is built
+        // (rustls is compiled with `rustls-no-provider`). Idempotent.
+        crate::tls::ensure_crypto_provider();
         Ok(Arc::new(AppCore {
             engine,
             repo,

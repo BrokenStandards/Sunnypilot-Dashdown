@@ -23,6 +23,10 @@ pub struct CopypartyClient {
 
 impl CopypartyClient {
     pub fn new(base_url: &str, creds: Credentials) -> Result<Self> {
+        // rustls is built with the ring provider and no compiled-in default
+        // (`rustls-no-provider`), so a process default must be installed before
+        // the first client build or `build()` fails. Idempotent.
+        crate::tls::ensure_crypto_provider();
         // Devices are on the LAN (hotspot/wifi IPs); never route via a proxy.
         let http = reqwest::Client::builder().no_proxy().build()?;
         Self::with_client(base_url, creds, http)
