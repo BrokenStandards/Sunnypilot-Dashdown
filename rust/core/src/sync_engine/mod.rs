@@ -16,11 +16,12 @@ pub use download_job::{
     download_file, DownloadProgress, FileOutcome, JobOutcome, ProgressSink, MAX_ATTEMPTS,
 };
 
+use crate::connectivity::{self, DeviceConnectivity};
 use crate::copyparty_client::{CopypartyClient, Credentials};
 use crate::db::Repo;
 use crate::drive_grouping::group_segments;
 use crate::error::{CoreError, Result};
-use crate::model::{Device, DownloadState, Drive, FileSelection, JobState, SyncStatus};
+use crate::model::{ConnDot, Device, DownloadState, Drive, FileSelection, JobState, SyncStatus};
 use crate::storage::{
     paths::{dir_rel, file_rel},
     MirrorStore,
@@ -227,6 +228,43 @@ impl SyncEngine {
         self.enforce_retention(device).await?;
         self.auto_delete_from_comma(device, now_ms).await?;
         Ok(())
+    }
+
+    /// Probe the device's connectivity and resolve its dot (M7): `Red` if the
+    /// active `(ip, port)` isn't TCP-reachable; otherwise `Blue` when a download
+    /// job is running for it, else `Green`. `Red` short-circuits — when the
+    /// device is unreachable there is no point querying the index.
+    ///
+    /// "Active" means a running *download job*; a brief, untracked `sync_now`
+    /// index refresh is intentionally not counted (matches the "Blue while
+    /// downloading" contract). A job left `running` by a crashed process reads as
+    /// `Blue` until the next `reconcile`/`sync_now` reclaims it (self-healing).
+    pub async fn check_connectivity(&self, device: &Device) -> Result<DeviceConnectivity> {
+        let reachable = connectivity::tcp_reachable(
+            device.active_ip(),
+            device.port,
+            connectivity::DEFAULT_CONNECT_TIMEOUT,
+        )
+        .await;
+        if !reachable {
+            return Ok(DeviceConnectivity {
+                dot: ConnDot::Red,
+                reachable: false,
+                downloading: false,
+            });
+        }
+        let device_id = device.id;
+        let downloading = db(self.repo.clone(), move |r| r.has_active_job(device_id)).await?;
+        let dot = if downloading {
+            ConnDot::Blue
+        } else {
+            ConnDot::Green
+        };
+        Ok(DeviceConnectivity {
+            dot,
+            reachable: true,
+            downloading,
+        })
     }
 
     /// Spawn a drive download on its own task; return a handle to cancel it.

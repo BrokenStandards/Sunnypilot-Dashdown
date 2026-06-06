@@ -5,6 +5,7 @@
 //! generation on every target platform. They are replaced by the real `AppCore`
 //! surface in M8 — nothing here is product functionality.
 
+pub mod connectivity;
 pub mod copyparty_client;
 pub mod db;
 pub mod drive_grouping;
