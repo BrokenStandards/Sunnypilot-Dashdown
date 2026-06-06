@@ -16,6 +16,7 @@ pub mod model;
 pub mod settings;
 pub mod storage;
 pub mod sync_engine;
+pub mod tls;
 
 uniffi::setup_scaffolding!();
 

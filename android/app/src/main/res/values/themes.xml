@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose draws its own Material3 UI; the activity only needs a valid,
+         dependency-free framework theme with no action bar. -->
+    <style name="Theme.Dashdown" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
