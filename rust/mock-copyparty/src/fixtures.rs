@@ -1,5 +1,6 @@
 //! Temp-dir fixture trees mimicking a comma device's `realdata/` directory.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -8,11 +9,22 @@ use tempfile::TempDir;
 /// A fixture directory tree (kept alive while in scope).
 pub struct Fixture {
     pub dir: TempDir,
+    /// Relative-path → advertised `sz` overriding the real on-disk size in the
+    /// `?ls=j` listing. Empty for honest fixtures; set by [`size_mismatch`].
+    pub size_overrides: HashMap<String, u64>,
 }
 
 impl Fixture {
     pub fn path(&self) -> &Path {
         self.dir.path()
+    }
+
+    /// An honest fixture: listings report true on-disk sizes.
+    fn plain(dir: TempDir) -> Self {
+        Self {
+            dir,
+            size_overrides: HashMap::new(),
+        }
     }
 }
 
@@ -34,7 +46,7 @@ pub fn single_drive() -> Fixture {
     for n in 0..3 {
         full_segment(dir.path(), &format!("{route}--{n}"));
     }
-    Fixture { dir }
+    Fixture::plain(dir)
 }
 
 /// Two distinct routes (a new route ⇒ a new drive in M2).
@@ -46,7 +58,20 @@ pub fn gap_split() -> Fixture {
     for n in 0..2 {
         full_segment(dir.path(), &format!("000001a4--aabbccddee--{n}"));
     }
-    Fixture { dir }
+    Fixture::plain(dir)
+}
+
+/// One route with a **segment-index gap** (0, 1, 3 — missing 2): drive grouping
+/// splits at the index break into two drives. Mirrors a real >1-min recording
+/// gap within a single loggerd session more closely than [`gap_split`]'s
+/// distinct-routes case.
+pub fn gap_index() -> Fixture {
+    let dir = TempDir::new().unwrap();
+    let route = "000001a7--5566778899";
+    for n in [0u32, 1, 3] {
+        full_segment(dir.path(), &format!("{route}--{n}"));
+    }
+    Fixture::plain(dir)
 }
 
 /// One drive whose last segment is still recording (`rlog.lock` present) and
@@ -60,5 +85,26 @@ pub fn partial() -> Fixture {
     fs::create_dir_all(&base).unwrap();
     fs::write(base.join("qcamera.ts"), vec![0u8; 600]).unwrap();
     fs::write(base.join("rlog.lock"), b"").unwrap(); // recording marker
-    Fixture { dir }
+    Fixture::plain(dir)
+}
+
+/// One drive whose `qcamera.ts` is served honestly (600 real bytes) but the
+/// listing **advertises a larger `sz` (1200)**. A client that downloads it
+/// commits the real 600 bytes, which then mismatch the recorded remote size →
+/// `DownloadState::SizeMismatch` (drive `Partial`/resumable). Exercises the
+/// re-fetch path without needing a truncating proxy.
+pub fn size_mismatch() -> Fixture {
+    let dir = TempDir::new().unwrap();
+    let route = "000001a6--deadbeef00";
+    let seg = format!("{route}--0");
+    let base = dir.path().join("realdata").join(&seg);
+    fs::create_dir_all(&base).unwrap();
+    fs::write(base.join("qcamera.ts"), vec![0u8; 600]).unwrap();
+
+    let mut size_overrides = HashMap::new();
+    size_overrides.insert(format!("realdata/{seg}/qcamera.ts"), 1200u64);
+    Fixture {
+        dir,
+        size_overrides,
+    }
 }
