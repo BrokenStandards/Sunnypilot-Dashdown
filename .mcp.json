@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mock-comma": {
+      "command": "cargo",
+      "args": ["run", "-q", "-p", "mock-comma-mcp"]
+    }
+  }
+}

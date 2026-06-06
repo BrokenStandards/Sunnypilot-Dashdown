@@ -127,6 +127,17 @@ impl MockServer {
     pub fn addr(&self) -> SocketAddr {
         self.addr
     }
+
+    /// Stop the server and **wait** for its listener to close before returning,
+    /// so the caller can immediately re-bind the same port (the plain `Drop`
+    /// `abort()` is asynchronous, racing a same-port rebind → `EADDRINUSE`).
+    pub async fn shutdown(mut self) {
+        self.handle.abort();
+        // `&mut JoinHandle` is a Future (JoinHandle: Unpin); awaiting the aborted
+        // task completes only after its future — and thus the `TcpListener` — is
+        // dropped, releasing the port.
+        let _ = (&mut self.handle).await;
+    }
 }
 
 impl Drop for MockServer {
