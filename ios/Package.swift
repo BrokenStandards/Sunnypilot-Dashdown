@@ -29,10 +29,14 @@ let package = Package(
         ),
         // UniFFI-generated Swift bindings; `dashdown_core.swift` imports the
         // `dashdown_coreFFI` clang module that the xcframework exposes.
+        // The uniffi-0.31 generated code targets Swift 5 semantics (its callback
+        // vtable globals aren't Sendable), so compile this target in Swift 5
+        // language mode to satisfy the package's Swift 6 tools-version.
         .target(
             name: "UniFFI",
             dependencies: [.target(name: "DashdownCoreRS")],
-            path: "Sources/UniFFI"
+            path: "Sources/UniFFI",
+            swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         // The SwiftUI app.
         .target(

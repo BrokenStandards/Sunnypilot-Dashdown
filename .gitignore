@@ -6,6 +6,8 @@
 
 # --- Rust -------------------------------------------------------------------
 /target
+# iOS cross-compile target dir (used by tools/ios-build.sh in Docker)
+/target-ios
 **/*.rs.bk
 *.pdb
 

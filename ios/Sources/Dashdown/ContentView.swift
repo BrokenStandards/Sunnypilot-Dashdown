@@ -14,7 +14,7 @@ struct ContentView: View {
     }
     .padding(24)
     .task {
-      async = (try? await pingAsync()) ?? "error"
+      async = await pingAsync()
     }
   }
 }

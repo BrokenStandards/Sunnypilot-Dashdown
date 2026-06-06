@@ -14,8 +14,8 @@ final class CoreLoadTests: XCTestCase {
     XCTAssertFalse(version().isEmpty)
   }
 
-  func testAsyncFfi() async throws {
-    let pong = try await pingAsync()
+  func testAsyncFfi() async {
+    let pong = await pingAsync()
     XCTAssertEqual(pong, "pong")
   }
 }

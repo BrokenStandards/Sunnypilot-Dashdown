@@ -4,35 +4,41 @@
 #   2. generate Swift bindings (+ FFI header/modulemap) via the in-workspace bindgen
 #   3. hand-assemble an .xcframework (no `xcodebuild` on Linux)
 #
-# Run this once before `xtool dev` / `xtool dev build`. Re-run after any change
-# to the Rust core.
+# Run inside the iOS build container (see tools/ios-build.sh), which provides
+# Swift 6.3 + xtool + the Darwin SDK built from an Xcode.xip. Re-run after any
+# change to the Rust core.
 #
-# PREREQUISITES (Phase B / B0 toolchain — see ios/README.md):
-#   - Swift 6.3 toolchain on PATH (`swift --version`)
-#   - xtool + the Darwin Swift SDK built from an Xcode.xip (`xtool sdk status`)
-#   - iOS Rust target installed: `rustup target add aarch64-apple-ios` (already in
-#     rust-toolchain.toml)
-#
-# TOOLCHAIN ENV (must point at the xtool-provided Apple clang + iOS sysroot so the
-# core's C deps — bundled SQLite, ring — cross-compile). These are confirmed and
-# pinned against the actual installed SDK during B0 bring-up; defaults below are
-# the expected shape:
-#   export SDKROOT=...                       # iPhoneOS .sdk from the xtool SDK
-#   export CC_aarch64_apple_ios=...clang
-#   export AR_aarch64_apple_ios=...ar
-#   export CFLAGS_aarch64_apple_ios="-target arm64-apple-ios17.0 -isysroot $SDKROOT"
+# The Rust C deps (bundled SQLite, ring) are cross-compiled with the Xcode iOS
+# sysroot from the installed Darwin Swift SDK. We build ONLY the staticlib
+# (`cargo rustc --crate-type staticlib`) so no Apple linker is needed.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."                       # repo root (workspace Cargo.toml)
+cd "$(dirname "$0")/.."                        # repo root (workspace Cargo.toml)
 REPO_ROOT="$(pwd)"
 CRATE=dashdown_core
 DEVICE_TARGET=aarch64-apple-ios
-STAGING="$REPO_ROOT/target/uniffi-ios-staging"
+TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
+STAGING="$TARGET_DIR/uniffi-ios-staging"
 XCF="$REPO_ROOT/ios/Frameworks/libdashdown_core-rs.xcframework"
 
-echo "==> 1/3 cross-compiling $CRATE for $DEVICE_TARGET (release)"
-cargo build -p dashdown-core --lib --release --target "$DEVICE_TARGET"
-DEVICE_LIB="$REPO_ROOT/target/$DEVICE_TARGET/release/lib${CRATE}.a"
+# iOS sysroot from the installed xtool Darwin SDK (override via DARWIN_SDK_BUNDLE).
+SDK_BUNDLE="${DARWIN_SDK_BUNDLE:-$HOME/.swiftpm/swift-sdks/darwin.artifactbundle}"
+SYSROOT="$SDK_BUNDLE/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+if [ ! -d "$SYSROOT" ]; then
+  echo "error: iOS sysroot not found at $SYSROOT" >&2
+  echo "       install the Darwin SDK first: xtool sdk install <Xcode.xip>" >&2
+  exit 1
+fi
+
+# cc-crate cross-compile env for the C deps (sqlite, ring).
+export SDKROOT="$SYSROOT"
+export CC_aarch64_apple_ios=clang
+export AR_aarch64_apple_ios=llvm-ar
+export CFLAGS_aarch64_apple_ios="--target=arm64-apple-ios -isysroot $SYSROOT -mios-version-min=17.0"
+
+echo "==> 1/3 cross-compiling $CRATE staticlib for $DEVICE_TARGET (release)"
+cargo rustc -p dashdown-core --release --target "$DEVICE_TARGET" --crate-type staticlib
+DEVICE_LIB="$TARGET_DIR/$DEVICE_TARGET/release/lib${CRATE}.a"
 
 echo "==> 2/3 generating Swift bindings"
 rm -rf "$STAGING"; mkdir -p "$STAGING"
@@ -73,4 +79,4 @@ cat > "$XCF/Info.plist" <<'PLIST'
 PLIST
 
 echo "OK: $XCF + ios/Sources/UniFFI/${CRATE}.swift"
-echo "Next: xtool dev   (build + install + run on a connected iPhone)"
+echo "Next: cd ios && xtool dev build   (cross-compile + link the app)"
