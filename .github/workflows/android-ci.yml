@@ -57,7 +57,7 @@ jobs:
           retention-days: 5
 
   connected-check:
-    name: on-device load smoke (emulator)
+    name: on-device tests (emulator)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -93,14 +93,17 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Run :core connected load smoke on emulator
+      - name: Run :core + :app connected tests on emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
           target: aosp_atd
           arch: x86_64
           working-directory: android
-          script: ./gradlew :core:connectedDebugAndroidTest --stacktrace
+          # :app live tests (DrivesSync/DownloadService/DriveExport/AutoSyncWorker/
+          # Connectivity.reachable) self-skip without a `mockPort` arg, so only the
+          # hermetic UI + core tests run here. unreachableDeviceShowsRed runs (no server needed).
+          script: ./gradlew :core:connectedDebugAndroidTest :app:connectedDebugAndroidTest --stacktrace
 
       - name: Upload test reports
         if: success() || failure()
