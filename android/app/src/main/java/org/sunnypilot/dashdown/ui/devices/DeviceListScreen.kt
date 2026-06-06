@@ -47,6 +47,7 @@ fun DeviceListRoute(
     onAddDevice: () -> Unit,
     onDeviceClick: (Long) -> Unit,
     onDeviceEdit: (Long) -> Unit,
+    onDeviceSettings: (Long) -> Unit,
 ) {
   val repo = rememberRepository()
   val vm: DeviceListViewModel =
@@ -62,6 +63,7 @@ fun DeviceListRoute(
       onAddDevice = onAddDevice,
       onDeviceClick = onDeviceClick,
       onDeviceEdit = onDeviceEdit,
+      onDeviceSettings = onDeviceSettings,
       onRemove = vm::remove,
   )
 }
@@ -72,6 +74,7 @@ fun DeviceListScreen(
     onAddDevice: () -> Unit,
     onDeviceClick: (Long) -> Unit,
     onDeviceEdit: (Long) -> Unit,
+    onDeviceSettings: (Long) -> Unit,
     onRemove: (Long) -> Unit,
 ) {
   Scaffold(
@@ -99,6 +102,7 @@ fun DeviceListScreen(
                     row = row,
                     onClick = { onDeviceClick(row.device.id) },
                     onEdit = { onDeviceEdit(row.device.id) },
+                    onSettings = { onDeviceSettings(row.device.id) },
                     onRemove = { onRemove(row.device.id) },
                 )
                 HorizontalDivider()
@@ -121,6 +125,7 @@ private fun DeviceRowItem(
     row: DeviceRow,
     onClick: () -> Unit,
     onEdit: () -> Unit,
+    onSettings: () -> Unit,
     onRemove: () -> Unit,
 ) {
   var menu by remember { mutableStateOf(false) }
@@ -139,6 +144,13 @@ private fun DeviceRowItem(
                 onClick = {
                   menu = false
                   onEdit()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("Settings") },
+                onClick = {
+                  menu = false
+                  onSettings()
                 },
             )
             DropdownMenuItem(

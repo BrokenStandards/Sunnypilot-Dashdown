@@ -27,6 +27,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import org.sunnypilot.dashdown.ui.devices.DeviceListRoute
+import org.sunnypilot.dashdown.ui.edit.DeviceEditRoute
+import org.sunnypilot.dashdown.ui.settings.DeviceSettingsRoute
 
 /**
  * Single-activity navigation graph. `testTagsAsResourceId` on the root exposes Compose test tags as
@@ -47,6 +49,7 @@ fun AppNavHost(navController: NavHostController = rememberNavController()) {
           onAddDevice = { navController.navigate("device/edit") },
           onDeviceClick = { id -> navController.navigate("device/$id/drives") },
           onDeviceEdit = { id -> navController.navigate("device/edit?deviceId=$id") },
+          onDeviceSettings = { id -> navController.navigate("device/$id/settings") },
       )
     }
     composable(
@@ -58,8 +61,16 @@ fun AppNavHost(navController: NavHostController = rememberNavController()) {
                   nullable = true
                   defaultValue = null
                 }),
-    ) {
-      PlaceholderScreen("Add / edit device") { navController.popBackStack() }
+    ) { entry ->
+      val id = entry.arguments?.getString("deviceId")?.toLongOrNull()
+      DeviceEditRoute(deviceId = id, onDone = { navController.popBackStack() })
+    }
+    composable(
+        route = "device/{id}/settings",
+        arguments = listOf(navArgument("id") { type = NavType.LongType }),
+    ) { entry ->
+      val id = entry.arguments?.getLong("id") ?: return@composable
+      DeviceSettingsRoute(deviceId = id, onDone = { navController.popBackStack() })
     }
     composable(
         route = "device/{id}/drives",

@@ -46,7 +46,7 @@ class DeviceListScreenTest {
             DeviceRow(device(2, "Garage"), ConnDot.RED, "No drives yet"),
         )
     rule.setContent {
-      DashdownTheme { DeviceListScreen(DeviceListUiState(rows = rows), {}, {}, {}, {}) }
+      DashdownTheme { DeviceListScreen(DeviceListUiState(rows = rows), {}, {}, {}, {}, {}) }
     }
 
     rule.onNodeWithTag("add_device_fab").assertExists()
@@ -60,7 +60,7 @@ class DeviceListScreenTest {
   @Test
   fun showsEmptyState() {
     rule.setContent {
-      DashdownTheme { DeviceListScreen(DeviceListUiState(loading = false), {}, {}, {}, {}) }
+      DashdownTheme { DeviceListScreen(DeviceListUiState(loading = false), {}, {}, {}, {}, {}) }
     }
 
     rule.onNodeWithText("No devices yet", substring = true).assertExists()
