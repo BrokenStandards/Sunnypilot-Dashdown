@@ -43,6 +43,9 @@ dependencies {
     implementation libs.androidx.ktx
     implementation libs.androidx.lifecycle.runtime.ktx
     implementation libs.androidx.activity.compose
+    // StateFlow/Flow + Dispatchers used by the repository and progress bus. (The core
+    // module keeps coroutines `implementation`-scoped, so :app declares its own.)
+    implementation libs.kotlinx.coroutines.android
 
     implementation platform(libs.androidx.compose.bom)
     implementation libs.androidx.compose.ui
