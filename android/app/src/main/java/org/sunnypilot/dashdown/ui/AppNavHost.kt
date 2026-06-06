@@ -2,6 +2,7 @@
 
 package org.sunnypilot.dashdown.ui
 
+import android.net.Uri
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -27,6 +28,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import org.sunnypilot.dashdown.ui.devices.DeviceListRoute
+import org.sunnypilot.dashdown.ui.drives.DrivesListRoute
 import org.sunnypilot.dashdown.ui.edit.DeviceEditRoute
 import org.sunnypilot.dashdown.ui.settings.DeviceSettingsRoute
 
@@ -75,8 +77,23 @@ fun AppNavHost(navController: NavHostController = rememberNavController()) {
     composable(
         route = "device/{id}/drives",
         arguments = listOf(navArgument("id") { type = NavType.LongType }),
+    ) { entry ->
+      val id = entry.arguments?.getLong("id") ?: return@composable
+      DrivesListRoute(
+          deviceId = id,
+          onDriveClick = { key -> navController.navigate("device/$id/drive/${Uri.encode(key)}") },
+          onBack = { navController.popBackStack() },
+      )
+    }
+    composable(
+        route = "device/{id}/drive/{driveKey}",
+        arguments =
+            listOf(
+                navArgument("id") { type = NavType.LongType },
+                navArgument("driveKey") { type = NavType.StringType },
+            ),
     ) {
-      PlaceholderScreen("Drives") { navController.popBackStack() }
+      PlaceholderScreen("Drive detail") { navController.popBackStack() }
     }
   }
 }
