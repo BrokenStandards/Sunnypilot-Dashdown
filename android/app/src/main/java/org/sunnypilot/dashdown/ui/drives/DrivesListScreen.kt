@@ -5,14 +5,18 @@ package org.sunnypilot.dashdown.ui.drives
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -25,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
@@ -32,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -45,6 +51,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import org.sunnypilot.dashdown.data.DriveProgress
+import org.sunnypilot.dashdown.service.DownloadService
 import org.sunnypilot.dashdown.ui.rememberRepository
 import uniffi.dashdown_core.Drive
 import uniffi.dashdown_core.SyncStatus
@@ -56,6 +63,7 @@ fun DrivesListRoute(deviceId: Long, onDriveClick: (String) -> Unit, onBack: () -
       viewModel(factory = viewModelFactory { initializer { DrivesListViewModel(repo, deviceId) } })
   val state by vm.state.collectAsStateWithLifecycle()
   val progress by vm.progress.collectAsStateWithLifecycle()
+  val context = LocalContext.current
   // Re-run the cheap offline reclassify on resume (e.g. returning from a download).
   LifecycleResumeEffect(Unit) {
     vm.loadOffline()
@@ -66,6 +74,8 @@ fun DrivesListRoute(deviceId: Long, onDriveClick: (String) -> Unit, onBack: () -
       progress = progress,
       onRefresh = vm::refreshOnline,
       onPreserve = vm::togglePreserve,
+      onDownload = { d -> DownloadService.start(context, deviceId, d.driveKey) },
+      onCancel = { d -> DownloadService.cancel(context, d.driveKey) },
       onDriveClick = onDriveClick,
       onBack = onBack,
   )
@@ -77,6 +87,8 @@ fun DrivesListScreen(
     progress: Map<String, DriveProgress>,
     onRefresh: () -> Unit,
     onPreserve: (Drive) -> Unit,
+    onDownload: (Drive) -> Unit,
+    onCancel: (Drive) -> Unit,
     onDriveClick: (String) -> Unit,
     onBack: () -> Unit,
 ) {
@@ -117,6 +129,8 @@ fun DrivesListScreen(
                         live = progress[drive.driveKey],
                         onClick = { onDriveClick(drive.driveKey) },
                         onPreserve = { onPreserve(drive) },
+                        onDownload = { onDownload(drive) },
+                        onCancel = { onCancel(drive) },
                     )
                     HorizontalDivider()
                   }
@@ -138,7 +152,9 @@ private fun DriveRow(
     drive: Drive,
     live: DriveProgress?,
     onClick: () -> Unit,
-    onPreserve: () -> Unit
+    onPreserve: () -> Unit,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit,
 ) {
   val downloading = live != null && live.terminal == null
   val status = if (downloading) SyncStatus.DOWNLOADING else drive.syncState
@@ -160,7 +176,11 @@ private fun DriveRow(
       headlineContent = { Text(driveTitle(drive)) },
       supportingContent = {
         Column {
-          Text(driveSubtitle(drive))
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(driveSubtitle(drive))
+            Spacer(Modifier.width(8.dp))
+            SyncBadge(status)
+          }
           if (downloading && live != null && live.bytesTotal > 0) {
             LinearProgressIndicator(
                 progress = { (live.bytesDone.toFloat() / live.bytesTotal).coerceIn(0f, 1f) },
@@ -169,9 +189,40 @@ private fun DriveRow(
           }
         }
       },
-      trailingContent = { SyncBadge(status) },
+      trailingContent = { DriveAction(drive.driveKey, status, onDownload, onCancel) },
       modifier = Modifier.clickable(onClick = onClick).testTag("drive_row_${drive.driveKey}"),
   )
+}
+
+/** Per-row action: Download/Resume to start, Cancel while downloading, a check when complete. */
+@Composable
+private fun DriveAction(
+    driveKey: String,
+    status: SyncStatus,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit,
+) {
+  when (status) {
+    SyncStatus.DOWNLOADING ->
+        TextButton(onClick = onCancel, modifier = Modifier.testTag("drive_cancel_$driveKey")) {
+          Text("Cancel")
+        }
+    SyncStatus.COMPLETE ->
+        Icon(
+            Icons.Filled.CheckCircle,
+            contentDescription = "complete",
+            tint = Color(0xFF2E7D32),
+        )
+    SyncStatus.PARTIAL,
+    SyncStatus.FAILED ->
+        TextButton(onClick = onDownload, modifier = Modifier.testTag("drive_download_$driveKey")) {
+          Text("Resume")
+        }
+    SyncStatus.NOT_DOWNLOADED ->
+        TextButton(onClick = onDownload, modifier = Modifier.testTag("drive_download_$driveKey")) {
+          Text("Download")
+        }
+  }
 }
 
 @Composable

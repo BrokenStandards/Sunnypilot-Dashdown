@@ -1,6 +1,7 @@
 package org.sunnypilot.dashdown.data
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import org.sunnypilot.dashdown.ServiceLocator
@@ -24,6 +25,10 @@ class DashdownRepository(private val locator: ServiceLocator) {
   /** Live per-drive download progress, keyed by driveKey. */
   val progress: StateFlow<Map<String, DriveProgress>>
     get() = locator.progressBus.states
+
+  /** One-shot completed/failed events (cancellation emits nothing). */
+  val terminalEvents: SharedFlow<TerminalEvent>
+    get() = locator.progressBus.terminal
 
   // --- Devices ---
   suspend fun listDevices(): List<Device> = io { locator.core.listDevices() }
