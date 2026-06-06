@@ -38,7 +38,8 @@ jobs:
 
       - name: Install Android NDK + platform + build-tools
         run: |
-          yes | sdkmanager "ndk;27.3.13750724" "platforms;android-36" "build-tools;36.0.0" >/dev/null
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" "ndk;27.3.13750724" "platforms;android-36" "build-tools;36.0.0" > /dev/null
 
       - name: local.properties
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
@@ -79,7 +80,8 @@ jobs:
 
       - name: Install Android NDK + platform + build-tools
         run: |
-          yes | sdkmanager "ndk;27.3.13750724" "platforms;android-36" "build-tools;36.0.0" >/dev/null
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" "ndk;27.3.13750724" "platforms;android-36" "build-tools;36.0.0" > /dev/null
 
       - name: local.properties
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
