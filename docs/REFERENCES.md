@@ -66,3 +66,19 @@ We are building iOS **on Linux**, so `XcodeBuildMCP`/Xcode do not apply. The too
 - `cargo-ndk` v4.1.2 (`~/.cargo/bin`).
 - Android NDK **r27.3.13750724** at `/opt/android-sdk/ndk/27.3.13750724`. cargo-ndk auto-detects the highest installed NDK; set `ANDROID_NDK_HOME` to that path to be explicit.
 - **No `uniffi-bindgen` global install** — there is no current published binary crate, and the bindgen version must match the `uniffi` dependency. The canonical generator is an **in-workspace `rust/bindgen` crate** built in M0 (`fn main() { uniffi::uniffi_bindgen_main() }`), invoked via `cargo run -p bindgen`.
+
+---
+
+## Phase B test tooling (installed in B1)
+
+Hermetic UI testing for the native shells. Both MCP servers are registered in the repo-root `.mcp.json`.
+
+- **`mock-comma-mcp`** (in-repo, `rust/mock-comma-mcp`) — MCP server wrapping the `mock-copyparty`
+  fixture; provisions devices, injects states, toggles reachability. `cargo run -q -p mock-comma-mcp`.
+- **Maestro** v2.6.0 — `curl -fsSL https://get.maestro.mobile.dev | bash` → `~/.maestro/bin/maestro`
+  (added to `PATH` via the shell profile). Needs JDK 17+ and `adb`. Cross-platform YAML UI flows (B4).
+- **mobile-mcp** (`@mobilenext/mobile-mcp`, v0.0.58) — Android UI automation over `adb` on Linux,
+  run via `npx -y @mobilenext/mobile-mcp@latest` (stdio). Exposes `mobile_*` tools (launch, tap,
+  screenshot, list elements). Used for agentic UI runs in B2/B3.
+
+The Android emulator (`dashdown-b0` AVD) + SDK were set up in B0.

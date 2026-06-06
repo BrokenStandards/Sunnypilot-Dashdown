@@ -3,6 +3,10 @@
     "mock-comma": {
       "command": "cargo",
       "args": ["run", "-q", "-p", "mock-comma-mcp"]
+    },
+    "mobile-mcp": {
+      "command": "npx",
+      "args": ["-y", "@mobilenext/mobile-mcp@latest"]
     }
   }
 }
