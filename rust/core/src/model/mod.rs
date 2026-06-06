@@ -34,6 +34,30 @@ impl ConnMode {
     }
 }
 
+/// A device's connectivity indicator dot. Computed live by the sync engine
+/// (`check_connectivity`) from TCP reachability + active-download state — never
+/// persisted, so unlike the other model enums it has no `parse()` (no TEXT
+/// column round-trips through it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnDot {
+    /// Reachable and idle.
+    Green,
+    /// Reachable and a download is active for this device.
+    Blue,
+    /// Unreachable.
+    Red,
+}
+
+impl ConnDot {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ConnDot::Green => "green",
+            ConnDot::Blue => "blue",
+            ConnDot::Red => "red",
+        }
+    }
+}
+
 /// Which file streams to sync for a device — one toggle per downloadable kind.
 /// Audio is muxed into `qcamera.ts` upstream (sunnypilot `RecordAudio`), so it
 /// rides with the `qcamera` toggle rather than being a separate file. Persisted
@@ -351,6 +375,13 @@ impl Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conn_dot_as_str() {
+        assert_eq!(ConnDot::Green.as_str(), "green");
+        assert_eq!(ConnDot::Blue.as_str(), "blue");
+        assert_eq!(ConnDot::Red.as_str(), "red");
+    }
 
     #[test]
     fn sync_status_str_round_trip() {

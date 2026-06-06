@@ -447,6 +447,20 @@ impl Repo {
             .optional()?;
         raw.map(raw_to_job).transpose()
     }
+
+    /// Whether the device has a download job currently `running` — the
+    /// "download active for this device" signal behind the Blue connectivity dot
+    /// (M7). A single-query EXISTS; reuses `JobState::Running` so the state token
+    /// stays owned by the enum.
+    pub fn has_active_job(&self, device_id: i64) -> Result<bool> {
+        let conn = self.conn()?;
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM download_job WHERE device_id=?1 AND state=?2)",
+            params![device_id, JobState::Running.as_str()],
+            |r| r.get(0),
+        )?;
+        Ok(exists)
+    }
 }
 
 /// A `download_job` row.
