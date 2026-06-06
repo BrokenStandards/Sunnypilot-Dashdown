@@ -8,8 +8,10 @@
 
 pub mod fixtures;
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use axum::extract::State;
@@ -17,7 +19,7 @@ use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use serde_json::json;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpSocket};
 use tokio::task::JoinHandle;
 
 pub use fixtures::Fixture;
@@ -26,6 +28,21 @@ pub use fixtures::Fixture;
 struct AppState {
     root: PathBuf,
     password: Option<String>,
+    /// Relative-path → advertised `sz`, overriding on-disk size in listings.
+    /// Used to fabricate a size-mismatch (listing claims N, the GET still returns
+    /// the real M bytes) so the core classifies the downloaded file `SizeMismatch`.
+    size_overrides: Arc<HashMap<String, u64>>,
+}
+
+/// Options for [`MockServer::spawn_with`].
+#[derive(Default)]
+pub struct ServeOptions {
+    /// Bind address. `None` ⇒ ephemeral `127.0.0.1:0`. `Some(_)` ⇒ bind that exact
+    /// port with `SO_REUSEADDR` so a just-closed port can be re-bound immediately
+    /// (used by mock-comma-mcp to toggle reachability on a stable port).
+    pub addr: Option<SocketAddr>,
+    pub password: Option<String>,
+    pub size_overrides: HashMap<String, u64>,
 }
 
 /// A running mock server. Dropping it stops the server (and frees any owned
@@ -38,11 +55,59 @@ pub struct MockServer {
 }
 
 impl MockServer {
-    /// Serve an existing directory.
+    /// Serve an existing directory on an ephemeral port (no size overrides).
     pub async fn spawn_path(root: PathBuf, password: Option<String>) -> std::io::Result<Self> {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        Self::spawn_with(
+            root,
+            ServeOptions {
+                password,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Serve a [`Fixture`], keeping its temp dir alive for the server's lifetime.
+    /// Carries the fixture's `size_overrides` (for the size-mismatch fixture).
+    pub async fn spawn(fixture: Fixture, password: Option<String>) -> std::io::Result<Self> {
+        let root = fixture.dir.path().to_path_buf();
+        let mut srv = Self::spawn_with(
+            root,
+            ServeOptions {
+                password,
+                size_overrides: fixture.size_overrides.clone(),
+                ..Default::default()
+            },
+        )
+        .await?;
+        srv._root = Some(fixture.dir);
+        Ok(srv)
+    }
+
+    /// Serve `root` with explicit [`ServeOptions`] — the general constructor.
+    pub async fn spawn_with(root: PathBuf, opts: ServeOptions) -> std::io::Result<Self> {
+        let listener = match opts.addr {
+            Some(addr) => {
+                // Bind a specific port with SO_REUSEADDR so reachability toggles
+                // can re-bind the same port immediately after the prior listener
+                // is dropped (no TIME_WAIT block on localhost).
+                let socket = if addr.is_ipv4() {
+                    TcpSocket::new_v4()?
+                } else {
+                    TcpSocket::new_v6()?
+                };
+                socket.set_reuseaddr(true)?;
+                socket.bind(addr)?;
+                socket.listen(1024)?
+            }
+            None => TcpListener::bind(("127.0.0.1", 0)).await?,
+        };
         let addr = listener.local_addr()?;
-        let state = AppState { root, password };
+        let state = AppState {
+            root,
+            password: opts.password,
+            size_overrides: Arc::new(opts.size_overrides),
+        };
         let app = Router::new().fallback(handle).with_state(state);
         let handle = tokio::spawn(async move {
             let _ = axum::serve(listener, app.into_make_service()).await;
@@ -55,20 +120,23 @@ impl MockServer {
         })
     }
 
-    /// Serve a [`Fixture`], keeping its temp dir alive for the server's lifetime.
-    pub async fn spawn(fixture: Fixture, password: Option<String>) -> std::io::Result<Self> {
-        let root = fixture.dir.path().to_path_buf();
-        let mut srv = Self::spawn_path(root, password).await?;
-        srv._root = Some(fixture.dir);
-        Ok(srv)
-    }
-
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
 
     pub fn addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    /// Stop the server and **wait** for its listener to close before returning,
+    /// so the caller can immediately re-bind the same port (the plain `Drop`
+    /// `abort()` is asynchronous, racing a same-port rebind → `EADDRINUSE`).
+    pub async fn shutdown(mut self) {
+        self.handle.abort();
+        // `&mut JoinHandle` is a Future (JoinHandle: Unpin); awaiting the aborted
+        // task completes only after its future — and thus the `TcpListener` — is
+        // dropped, releasing the port.
+        let _ = (&mut self.handle).await;
     }
 }
 
@@ -122,7 +190,7 @@ async fn handle(
         if !target.is_dir() {
             return (StatusCode::NOT_FOUND, "not a directory").into_response();
         }
-        return listing_response(&target);
+        return listing_response(&state.root, &target, &state.size_overrides);
     }
 
     match std::fs::read(&target) {
@@ -152,7 +220,7 @@ fn check_auth(state: &AppState, uri: &Uri, headers: &HeaderMap) -> Option<Respon
     }
 }
 
-fn listing_response(dir: &Path) -> Response {
+fn listing_response(root: &Path, dir: &Path, overrides: &HashMap<String, u64>) -> Response {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return (StatusCode::NOT_FOUND, "").into_response();
     };
@@ -173,7 +241,16 @@ fn listing_response(dir: &Path) -> Response {
             );
         } else {
             let ext = name.rsplit('.').next().unwrap_or("").to_string();
-            files.push(json!({"lead": "-", "href": name, "sz": meta.len(), "ext": ext, "ts": ts}));
+            // Advertise the override size if one is set for this file's path
+            // (relative to root, forward-slashed); else its true on-disk size.
+            let rel = entry
+                .path()
+                .strip_prefix(root)
+                .ok()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|| name.clone());
+            let sz = overrides.get(&rel).copied().unwrap_or(meta.len());
+            files.push(json!({"lead": "-", "href": name, "sz": sz, "ext": ext, "ts": ts}));
         }
     }
     // Mirror copyparty: name/dt are NOT serialized; extra keys are present.

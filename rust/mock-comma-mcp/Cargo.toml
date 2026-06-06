@@ -1,0 +1,27 @@
+[package]
+name = "mock-comma-mcp"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mock_comma_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mock-comma-mcp"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "sync", "net"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+tempfile = "3.27.0"
+mock-copyparty = { path = "../mock-copyparty" }
+rmcp = { version = "1.7.0", features = ["transport-io"] }
+schemars = "1"
+
+[dev-dependencies]
+# Client + child-process transport so the integration test can spawn the server
+# binary and drive the real MCP stdio protocol (features merge with the dep above).
+rmcp = { version = "1.7.0", features = ["client", "transport-child-process"] }
