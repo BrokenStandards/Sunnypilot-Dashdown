@@ -1,24 +1,11 @@
-@file:OptIn(ExperimentalComposeUiApi::class, ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalComposeUiApi::class)
 
 package org.sunnypilot.dashdown.ui
 
 import android.net.Uri
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.navigation.NavHostController
@@ -27,6 +14,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import org.sunnypilot.dashdown.ui.detail.DriveDetailRoute
 import org.sunnypilot.dashdown.ui.devices.DeviceListRoute
 import org.sunnypilot.dashdown.ui.drives.DrivesListRoute
 import org.sunnypilot.dashdown.ui.edit.DeviceEditRoute
@@ -35,9 +23,6 @@ import org.sunnypilot.dashdown.ui.settings.DeviceSettingsRoute
 /**
  * Single-activity navigation graph. `testTagsAsResourceId` on the root exposes Compose test tags as
  * Android resource-ids so Maestro / mobile-mcp / uiautomator can match them.
- *
- * The edit and drives destinations are placeholders here; they're built in later steps so
- * navigation from the device list works end to end as the shell grows.
  */
 @Composable
 fun AppNavHost(navController: NavHostController = rememberNavController()) {
@@ -92,27 +77,11 @@ fun AppNavHost(navController: NavHostController = rememberNavController()) {
                 navArgument("id") { type = NavType.LongType },
                 navArgument("driveKey") { type = NavType.StringType },
             ),
-    ) {
-      PlaceholderScreen("Drive detail") { navController.popBackStack() }
+    ) { entry ->
+      val id = entry.arguments?.getLong("id") ?: return@composable
+      val driveKey = entry.arguments?.getString("driveKey")?.let(Uri::decode) ?: return@composable
+      DriveDetailRoute(
+          deviceId = id, driveKey = driveKey, onBack = { navController.popBackStack() })
     }
   }
-}
-
-@Composable
-private fun PlaceholderScreen(title: String, onBack: () -> Unit) {
-  Scaffold(
-      topBar = {
-        TopAppBar(
-            title = { Text(title) },
-            navigationIcon = {
-              IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-              }
-            },
-        )
-      }) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-          Text("$title — coming in a later step", Modifier.testTag("placeholder"))
-        }
-      }
 }
