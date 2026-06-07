@@ -98,13 +98,7 @@ async fn boot_copyparty(fixture: &Fixture) -> Option<(Killer, CopypartyClient)> 
     boot_copyparty_with(fixture, "r").await
 }
 
-/// Boot real copyparty with read+delete (`rwd`) so the M6 DELETE path can be
-/// verified against the authoritative server.
-async fn boot_copyparty_writable(fixture: &Fixture) -> Option<(Killer, CopypartyClient)> {
-    boot_copyparty_with(fixture, "rwd").await
-}
-
-/// Boot copyparty with the given volume flags (e.g. `r`, `rwd`).
+/// Boot copyparty with the given volume flags (e.g. `r`).
 async fn boot_copyparty_with(
     fixture: &Fixture,
     volflags: &str,
@@ -129,7 +123,7 @@ async fn boot_copyparty_with(
     let client = CopypartyClient::new(&base, Credentials::Anonymous).unwrap();
     // Wait for readiness (server startup) — up to ~12s.
     for _ in 0..48 {
-        if let Ok(s) = client.list_segments("realdata/").await {
+        if let Ok(s) = client.list_segments("routes/").await {
             if !s.is_empty() {
                 return Some((killer, client));
             }
@@ -139,7 +133,7 @@ async fn boot_copyparty_with(
     None
 }
 
-const QCAMERA: &str = "realdata/000001a3--c20ba54385--0/qcamera.ts";
+const QCAMERA: &str = "routes/000001a3--c20ba54385--0/qcamera.ts";
 
 #[tokio::test]
 async fn parses_real_copyparty_listing() {
@@ -148,7 +142,7 @@ async fn parses_real_copyparty_listing() {
         eprintln!("SKIP it_real_copyparty: copyparty not available");
         return;
     };
-    let segments = client.list_segments("realdata/").await.unwrap();
+    let segments = client.list_segments("routes/").await.unwrap();
 
     // Same assertions as the mock, but against the real server's JSON.
     assert_eq!(segments.len(), 3, "single_drive has 3 segments");
@@ -210,35 +204,4 @@ async fn real_copyparty_resumes_partial_download() {
 
     let got = std::fs::read(mirror.final_path(QCAMERA).unwrap()).unwrap();
     assert_eq!(got, full, "resumed file matches the original bytes");
-}
-
-/// Authoritative M6 DELETE verification: against a writable real copyparty,
-/// recursively delete a whole segment directory and confirm a re-list no longer
-/// shows it — verifying the WebDAV `DELETE` endpoint, 200 status, and recursive
-/// directory removal our auto-delete-from-comma relies on.
-#[tokio::test]
-async fn real_copyparty_delete_removes_segment_dir() {
-    let fixture = fixtures::single_drive();
-    let Some((_killer, client)) = boot_copyparty_writable(&fixture).await else {
-        eprintln!("SKIP it_real_copyparty: copyparty not available");
-        return;
-    };
-    assert_eq!(
-        client.list_segments("realdata/").await.unwrap().len(),
-        3,
-        "single_drive starts with 3 segments"
-    );
-
-    // Recursive directory delete (the whole segment) → real copyparty 200 OK.
-    client
-        .delete("realdata/000001a3--c20ba54385--0/")
-        .await
-        .unwrap();
-
-    let segs = client.list_segments("realdata/").await.unwrap();
-    assert_eq!(segs.len(), 2, "deleted segment is gone");
-    assert!(
-        segs.iter().all(|s| s.name.segment_num != 0),
-        "segment 0 removed; 1 and 2 remain"
-    );
 }

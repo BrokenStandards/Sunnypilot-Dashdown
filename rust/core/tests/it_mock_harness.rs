@@ -57,7 +57,7 @@ async fn gap_index_groups_into_two_drives() {
         .await
         .unwrap();
     let client = CopypartyClient::new(srv.base_url(), Credentials::Anonymous).unwrap();
-    let segs = client.list_segments("realdata/").await.unwrap();
+    let segs = client.list_segments("routes/").await.unwrap();
     let drives = group_segments(segs);
     assert_eq!(drives.len(), 2, "index gap 0,1,3 → two drives");
 }
@@ -70,7 +70,7 @@ async fn size_mismatch_advertises_inflated_size() {
         .await
         .unwrap();
     let client = CopypartyClient::new(srv.base_url(), Credentials::Anonymous).unwrap();
-    let segs = client.list_segments("realdata/").await.unwrap();
+    let segs = client.list_segments("routes/").await.unwrap();
     let qcam = segs
         .iter()
         .flat_map(|s| &s.files)

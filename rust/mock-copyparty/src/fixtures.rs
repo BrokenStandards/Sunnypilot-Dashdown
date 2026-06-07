@@ -1,4 +1,5 @@
-//! Temp-dir fixture trees mimicking a comma device's `realdata/` directory.
+//! Temp-dir fixture trees mimicking a comma device's footage, served under the
+//! copyparty URL alias `routes/` (sunnypilot maps the on-disk `realdata/` dir there).
 
 use std::collections::HashMap;
 use std::fs;
@@ -28,9 +29,9 @@ impl Fixture {
     }
 }
 
-/// Write the full file set for one segment under `realdata/<seg>/`.
+/// Write the full file set for one segment under `routes/<seg>/`.
 fn full_segment(root: &Path, seg: &str) {
-    let base = root.join("realdata").join(seg);
+    let base = root.join("routes").join(seg);
     fs::create_dir_all(&base).unwrap();
     fs::write(base.join("qcamera.ts"), vec![0u8; 1200]).unwrap();
     fs::write(base.join("rlog.zst"), vec![1u8; 300]).unwrap();
@@ -81,7 +82,7 @@ pub fn partial() -> Fixture {
     let route = "000001a5--1122334455";
     full_segment(dir.path(), &format!("{route}--0"));
 
-    let base = dir.path().join("realdata").join(format!("{route}--1"));
+    let base = dir.path().join("routes").join(format!("{route}--1"));
     fs::create_dir_all(&base).unwrap();
     fs::write(base.join("qcamera.ts"), vec![0u8; 600]).unwrap();
     fs::write(base.join("rlog.lock"), b"").unwrap(); // recording marker
@@ -97,12 +98,12 @@ pub fn size_mismatch() -> Fixture {
     let dir = TempDir::new().unwrap();
     let route = "000001a6--deadbeef00";
     let seg = format!("{route}--0");
-    let base = dir.path().join("realdata").join(&seg);
+    let base = dir.path().join("routes").join(&seg);
     fs::create_dir_all(&base).unwrap();
     fs::write(base.join("qcamera.ts"), vec![0u8; 600]).unwrap();
 
     let mut size_overrides = HashMap::new();
-    size_overrides.insert(format!("realdata/{seg}/qcamera.ts"), 1200u64);
+    size_overrides.insert(format!("routes/{seg}/qcamera.ts"), 1200u64);
     Fixture {
         dir,
         size_overrides,

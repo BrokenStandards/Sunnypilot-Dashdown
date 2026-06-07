@@ -253,8 +253,8 @@ impl Repo {
     /// the *derived* columns, leaving `preserved`/`sync_state` intact) and prune
     /// vanished drives. Pruning keeps any drive that still holds local data
     /// (`sync_state` complete/partial/downloading) or is `preserved` — so a drive
-    /// deliberately deleted from the comma (M6 auto-delete) but mirrored locally
-    /// stays in the library; only purely-remote, unpinned drives are dropped.
+    /// whose footage the device has since rotated away, but which is mirrored
+    /// locally, stays in the library; only purely-remote, unpinned drives are dropped.
     /// One transaction.
     pub fn replace_drives(&self, device_id: i64, drives: &[Drive]) -> Result<()> {
         let mut conn = self.conn()?;

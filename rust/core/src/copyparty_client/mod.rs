@@ -1,6 +1,5 @@
 //! Async copyparty client: `?ls=j` listing, segment enumeration, streamed
-//! download, `PW:` auth, and WebDAV `DELETE` (M6 auto-delete-from-comma).
-//! Atomic mirror writes live in `storage` (M3).
+//! download, and `PW:` auth. Atomic mirror writes live in `storage` (M3).
 
 pub mod auth;
 pub mod download;
@@ -139,22 +138,6 @@ impl CopypartyClient {
         let resp = req.send().await?;
         check_status(&resp)?;
         Ok(Fetch { resp })
-    }
-
-    /// Delete a remote path (file or directory) via WebDAV `DELETE`. copyparty
-    /// removes directories recursively and answers `200 OK`; a missing path
-    /// (`404`) is treated as idempotent success (already gone, the desired end
-    /// state). Requires the volume's `d` permission, else `403 Forbidden`.
-    pub async fn delete(&self, rel: &str) -> Result<()> {
-        let resp = auth::apply_auth(self.http.delete(self.url_for(rel)?), &self.creds)
-            .send()
-            .await?;
-        match resp.status().as_u16() {
-            200 | 204 | 404 => Ok(()),
-            401 => Err(CoreError::AuthRequired),
-            403 => Err(CoreError::Forbidden),
-            code => Err(CoreError::Http(format!("delete status {code}"))),
-        }
     }
 
     /// Re-verify that the server honors HTTP Range (a `bytes=0-0` probe returns

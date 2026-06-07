@@ -1,25 +1,24 @@
-//! Integration: M6 retention + auto-delete. Local retention pruning (oldest
-//! beyond budget, skipping `preserved`) and auto-delete-from-comma behind the
-//! Complete + age + fresh-re-verify guards, deleting whole segment directories
-//! from the (mock) copyparty server while keeping the local copy.
+//! Integration: local retention pruning. Drops the oldest drives beyond the
+//! device's `retention_max_minutes` budget (skipping `preserved`), deleting only
+//! local mirror files — the remote is never touched.
+//!
+//! Remote auto-delete-from-comma was removed: sunnypilot serves footage on a
+//! read-only copyparty volume, so it can't be deleted over HTTP (a future phase
+//! adds SSH-based remote sync/delete).
 
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use dashdown_core::copyparty_client::{CopypartyClient, Credentials};
 use dashdown_core::db::Repo;
 use dashdown_core::drive_grouping::group_segments;
 use dashdown_core::model::{
     ConnMode, Device, FileKind, FileSelection, Segment, SegmentFile, SegmentName, SyncStatus,
 };
 use dashdown_core::storage::MirrorStore;
-use dashdown_core::sync_engine::{CancellationToken, DownloadProgress, ProgressSink, SyncEngine};
-use mock_copyparty::{fixtures, MockServer};
-
-const SINGLE_ROUTE: &str = "000001a3--c20ba54385";
+use dashdown_core::sync_engine::SyncEngine;
 
 fn rel(route: &str, n: u32, name: &str) -> String {
-    format!("realdata/{route}--{n}/{name}")
+    format!("routes/{route}--{n}/{name}")
 }
 
 fn device(addr: SocketAddr, selection: FileSelection) -> Device {
@@ -37,24 +36,6 @@ fn device(addr: SocketAddr, selection: FileSelection) -> Device {
         retention_max_minutes: None,
         auto_delete_from_comma: false,
         auto_delete_min_age_min: 30,
-    }
-}
-
-#[derive(Default)]
-struct Recorder {
-    progress: Mutex<Vec<DownloadProgress>>,
-    completed: Mutex<Vec<String>>,
-    failed: Mutex<Vec<(String, String)>>,
-}
-impl ProgressSink for Recorder {
-    fn on_progress(&self, p: DownloadProgress) {
-        self.progress.lock().unwrap().push(p);
-    }
-    fn on_completed(&self, drive_key: String) {
-        self.completed.lock().unwrap().push(drive_key);
-    }
-    fn on_failed(&self, drive_key: String, error: String) {
-        self.failed.lock().unwrap().push((drive_key, error));
     }
 }
 
@@ -77,8 +58,6 @@ fn setup() -> Setup {
         mirror_root,
     }
 }
-
-// ---- (a) local retention pruning (no network) -------------------------------
 
 /// One route's segments, each carrying a single qcamera file with a fixed mtime
 /// (so the derived `end_ms` — and thus drive age order — is deterministic).
@@ -163,120 +142,4 @@ async fn retention_prunes_oldest_keeps_newest_and_preserved() {
     assert_eq!(by_key[&format!("{A}--0")].sync_state, SyncStatus::Complete);
     assert_eq!(by_key[&format!("{C}--0")].sync_state, SyncStatus::Complete);
     assert!(by_key[&format!("{A}--0")].preserved);
-}
-
-// ---- (b)-(d) auto-delete-from-comma (mock copyparty) ------------------------
-
-/// Sync + fully download the single fixture drive (previews only). Returns the
-/// drive_key and its `end_ms` (for age-guard arithmetic).
-async fn sync_and_download(s: &Setup, dev: &Device) -> (String, i64) {
-    let drives = s.engine.sync_now(dev).await.unwrap();
-    let dk = drives[0].drive_key.clone();
-    let end_ms = drives[0].end_ms.expect("fixture drive has a time");
-    let rec: Arc<dyn ProgressSink> = Arc::new(Recorder::default());
-    s.engine
-        .download_drive(dev, &dk, rec, CancellationToken::new())
-        .await
-        .unwrap();
-    (dk, end_ms)
-}
-
-#[tokio::test]
-async fn auto_delete_removes_remote_keeps_local_and_survives_resync() {
-    let srv = MockServer::spawn(fixtures::single_drive(), None)
-        .await
-        .unwrap();
-    let s = setup();
-    let mut dev = device(srv.addr(), FileSelection::previews_only());
-    dev.auto_delete_from_comma = true;
-    dev.id = s.repo.insert_device(&dev).unwrap();
-
-    let (dk, end_ms) = sync_and_download(&s, &dev).await;
-    let mirror = MirrorStore::new(s.mirror_root.join(dev.id.to_string()));
-    assert!(mirror.is_complete(&rel(SINGLE_ROUTE, 0, "qcamera.ts")));
-
-    // now_ms exactly at the age boundary ⇒ eligible.
-    let now_ms = end_ms + dev.auto_delete_min_age_min * 60_000;
-    let deleted = s.engine.auto_delete_from_comma(&dev, now_ms).await.unwrap();
-    assert_eq!(deleted, vec![dk.clone()]);
-
-    // Remote: the whole drive's segment dirs are gone (listing is now empty).
-    let client = CopypartyClient::new(srv.base_url(), Credentials::Anonymous).unwrap();
-    assert!(
-        client.list_segments("realdata/").await.unwrap().is_empty(),
-        "remote segments deleted"
-    );
-    // Local: the mirror copy is untouched.
-    for n in 0..3 {
-        assert!(mirror.is_complete(&rel(SINGLE_ROUTE, n, "qcamera.ts")));
-    }
-
-    // A follow-up sync against the now-empty remote keeps the drive (it has local
-    // data) — proving the replace_drives refinement, without touching `preserved`.
-    let after = s.engine.sync_now(&dev).await.unwrap();
-    let kept = after
-        .iter()
-        .find(|d| d.drive_key == dk)
-        .expect("comma-deleted drive stays in the library");
-    assert_eq!(kept.sync_state, SyncStatus::Complete);
-    assert!(!kept.preserved, "auto-delete must not auto-pin the drive");
-}
-
-#[tokio::test]
-async fn auto_delete_skips_too_recent_drive() {
-    let srv = MockServer::spawn(fixtures::single_drive(), None)
-        .await
-        .unwrap();
-    let s = setup();
-    let mut dev = device(srv.addr(), FileSelection::previews_only());
-    dev.auto_delete_from_comma = true;
-    dev.id = s.repo.insert_device(&dev).unwrap();
-
-    let (_dk, end_ms) = sync_and_download(&s, &dev).await;
-
-    // One ms short of the age threshold ⇒ not eligible.
-    let now_ms = end_ms + dev.auto_delete_min_age_min * 60_000 - 1;
-    let deleted = s.engine.auto_delete_from_comma(&dev, now_ms).await.unwrap();
-    assert!(deleted.is_empty(), "too-recent drive must not be deleted");
-
-    let client = CopypartyClient::new(srv.base_url(), Credentials::Anonymous).unwrap();
-    assert_eq!(
-        client.list_segments("realdata/").await.unwrap().len(),
-        3,
-        "remote untouched"
-    );
-}
-
-#[tokio::test]
-async fn auto_delete_skips_incomplete_drive() {
-    let srv = MockServer::spawn(fixtures::single_drive(), None)
-        .await
-        .unwrap();
-    let s = setup();
-    let mut dev = device(srv.addr(), FileSelection::previews_only());
-    dev.auto_delete_from_comma = true;
-    dev.id = s.repo.insert_device(&dev).unwrap();
-
-    let (_dk, end_ms) = sync_and_download(&s, &dev).await;
-
-    // Make the drive Partial: drop one local file and reclassify.
-    let mirror = MirrorStore::new(s.mirror_root.join(dev.id.to_string()));
-    mirror
-        .remove_file(&rel(SINGLE_ROUTE, 1, "qcamera.ts"))
-        .await
-        .unwrap();
-    let drives = s.engine.reconcile_device(&dev).await.unwrap();
-    assert_eq!(drives[0].sync_state, SyncStatus::Partial);
-
-    // Old enough, but not Complete ⇒ not eligible.
-    let now_ms = end_ms + dev.auto_delete_min_age_min * 60_000 + 60_000;
-    let deleted = s.engine.auto_delete_from_comma(&dev, now_ms).await.unwrap();
-    assert!(deleted.is_empty(), "incomplete drive must not be deleted");
-
-    let client = CopypartyClient::new(srv.base_url(), Credentials::Anonymous).unwrap();
-    assert_eq!(
-        client.list_segments("realdata/").await.unwrap().len(),
-        3,
-        "remote untouched"
-    );
 }

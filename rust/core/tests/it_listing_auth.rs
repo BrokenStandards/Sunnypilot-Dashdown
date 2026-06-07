@@ -10,7 +10,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 async fn sends_ls_j_query_and_pw_header() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/realdata/"))
+        .and(path("/routes/"))
         .and(query_param("ls", "j"))
         .and(header("PW", "secret"))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"dirs":[],"files":[]}"#))
@@ -20,7 +20,7 @@ async fn sends_ls_j_query_and_pw_header() {
 
     let client =
         CopypartyClient::new(&server.uri(), Credentials::Password("secret".into())).unwrap();
-    let listing = client.list_dir("realdata/").await.unwrap();
+    let listing = client.list_dir("routes/").await.unwrap();
     assert!(listing.dirs.is_empty() && listing.files.is_empty());
     // `.expect(1)` is verified on drop: confirms the request matched all matchers.
 }

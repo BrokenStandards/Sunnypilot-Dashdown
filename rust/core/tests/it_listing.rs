@@ -11,7 +11,7 @@ async fn lists_single_drive_segments() {
         .unwrap();
     let client = CopypartyClient::new(srv.base_url(), Credentials::Anonymous).unwrap();
 
-    let segments = client.list_segments("realdata/").await.unwrap();
+    let segments = client.list_segments("routes/").await.unwrap();
 
     assert_eq!(segments.len(), 3);
     for (i, seg) in segments.iter().enumerate() {
@@ -37,7 +37,7 @@ async fn gap_split_exposes_two_routes() {
         .unwrap();
     let client = CopypartyClient::new(srv.base_url(), Credentials::Anonymous).unwrap();
 
-    let segments = client.list_segments("realdata/").await.unwrap();
+    let segments = client.list_segments("routes/").await.unwrap();
 
     assert_eq!(segments.len(), 4);
     let routes: std::collections::BTreeSet<_> =
@@ -50,7 +50,7 @@ async fn partial_segment_flags_recording_and_skips_lock() {
     let srv = MockServer::spawn(fixtures::partial(), None).await.unwrap();
     let client = CopypartyClient::new(srv.base_url(), Credentials::Anonymous).unwrap();
 
-    let segments = client.list_segments("realdata/").await.unwrap();
+    let segments = client.list_segments("routes/").await.unwrap();
     assert_eq!(segments.len(), 2);
 
     let recording = segments.iter().find(|s| s.name.segment_num == 1).unwrap();
@@ -71,7 +71,7 @@ async fn downloads_a_file() {
     let client = CopypartyClient::new(srv.base_url(), Credentials::Anonymous).unwrap();
 
     let bytes = client
-        .download("realdata/000001a3--c20ba54385--0/qcamera.ts")
+        .download("routes/000001a3--c20ba54385--0/qcamera.ts")
         .await
         .unwrap();
     assert_eq!(bytes.len(), 1200);
@@ -85,11 +85,11 @@ async fn password_auth_round_trips() {
 
     // Correct password → ok.
     let ok = CopypartyClient::new(srv.base_url(), Credentials::Password("hunter2".into())).unwrap();
-    assert_eq!(ok.list_segments("realdata/").await.unwrap().len(), 3);
+    assert_eq!(ok.list_segments("routes/").await.unwrap().len(), 3);
 
     // Anonymous → 401 AuthRequired.
     let anon = CopypartyClient::new(srv.base_url(), Credentials::Anonymous).unwrap();
-    let err = anon.list_dir("realdata/").await.unwrap_err();
+    let err = anon.list_dir("routes/").await.unwrap_err();
     assert!(
         matches!(err, dashdown_core::error::CoreError::AuthRequired),
         "expected AuthRequired, got {err:?}"
@@ -97,7 +97,7 @@ async fn password_auth_round_trips() {
 
     // Wrong password → 403 Forbidden.
     let bad = CopypartyClient::new(srv.base_url(), Credentials::Password("nope".into())).unwrap();
-    let err = bad.list_dir("realdata/").await.unwrap_err();
+    let err = bad.list_dir("routes/").await.unwrap_err();
     assert!(
         matches!(err, dashdown_core::error::CoreError::Forbidden),
         "expected Forbidden, got {err:?}"

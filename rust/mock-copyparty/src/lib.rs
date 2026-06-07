@@ -1,10 +1,9 @@
 //! Hermetic copyparty-compatible fixture server for tests (and later UI tests).
 //!
 //! Serves `?ls=j` JSON directory listings (matching copyparty's shape: `dirs`/
-//! `files` with `href`/`sz`/`ts`, and **no** `name` field), plain `GET` file
-//! downloads, and WebDAV `DELETE` (recursive for directories) from a directory
-//! tree, with optional `pw` auth (query or `PW:` header → 401/403). Bind to an
-//! ephemeral port; drop to stop.
+//! `files` with `href`/`sz`/`ts`, and **no** `name` field) and plain `GET` file
+//! downloads from a directory tree, with optional `pw` auth (query or `PW:`
+//! header → 401/403). Bind to an ephemeral port; drop to stop.
 
 pub mod fixtures;
 
@@ -15,7 +14,7 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use axum::extract::State;
-use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
+use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use serde_json::json;
@@ -146,12 +145,7 @@ impl Drop for MockServer {
     }
 }
 
-async fn handle(
-    State(state): State<AppState>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-) -> Response {
+async fn handle(State(state): State<AppState>, uri: Uri, headers: HeaderMap) -> Response {
     if let Some(rejection) = check_auth(&state, &uri, &headers) {
         return rejection;
     }
@@ -163,23 +157,6 @@ async fn handle(
     let Some(target) = safe_join(&state.root, &rel) else {
         return (StatusCode::FORBIDDEN, "bad path").into_response();
     };
-
-    // WebDAV DELETE (M6): recursively remove a directory or a single file,
-    // matching copyparty's 200-on-success / 404-on-missing shape.
-    if method == Method::DELETE {
-        let res = if target.is_dir() {
-            std::fs::remove_dir_all(&target)
-        } else {
-            std::fs::remove_file(&target)
-        };
-        return match res {
-            Ok(()) => (StatusCode::OK, format!("deleted {rel}")).into_response(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                (StatusCode::NOT_FOUND, "no such file").into_response()
-            }
-            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "delete failed").into_response(),
-        };
-    }
 
     let is_ls = uri
         .query()

@@ -21,7 +21,7 @@ use wiremock::{Mock, MockServer as WireServer, ResponseTemplate};
 const ROUTE: &str = "000001a3--c20ba54385";
 
 fn rel(route: &str, n: u32, name: &str) -> String {
-    format!("realdata/{route}--{n}/{name}")
+    format!("routes/{route}--{n}/{name}")
 }
 
 fn device_at(addr: SocketAddr, selection: FileSelection) -> Device {

@@ -46,7 +46,7 @@ async fn single_drive_groups_into_one() {
     let srv = MockServer::spawn(fixtures::single_drive(), None)
         .await
         .unwrap();
-    let drives = group_remote(&client_for(&srv), "realdata/").await.unwrap();
+    let drives = group_remote(&client_for(&srv), "routes/").await.unwrap();
 
     assert_eq!(drives.len(), 1);
     let d = &drives[0];
@@ -65,7 +65,7 @@ async fn gap_split_groups_into_two_drives() {
     let srv = MockServer::spawn(fixtures::gap_split(), None)
         .await
         .unwrap();
-    let drives = group_remote(&client_for(&srv), "realdata/").await.unwrap();
+    let drives = group_remote(&client_for(&srv), "routes/").await.unwrap();
 
     assert_eq!(drives.len(), 2);
     assert_ne!(drives[0].route_id, drives[1].route_id);
@@ -76,7 +76,7 @@ async fn gap_split_groups_into_two_drives() {
 #[tokio::test]
 async fn partial_drive_flags_recording() {
     let srv = MockServer::spawn(fixtures::partial(), None).await.unwrap();
-    let drives = group_remote(&client_for(&srv), "realdata/").await.unwrap();
+    let drives = group_remote(&client_for(&srv), "routes/").await.unwrap();
 
     // Segments 0 and 1 of one route are consecutive → a single in-progress drive.
     assert_eq!(drives.len(), 1);
@@ -112,7 +112,7 @@ async fn persists_drives_and_hydrates_segments() {
     let srv = MockServer::spawn(fixtures::gap_split(), None)
         .await
         .unwrap();
-    let segments = client_for(&srv).list_segments("realdata/").await.unwrap();
+    let segments = client_for(&srv).list_segments("routes/").await.unwrap();
 
     let repo = Repo::open_in_memory().unwrap();
     let device_id = repo.insert_device(&test_device()).unwrap();

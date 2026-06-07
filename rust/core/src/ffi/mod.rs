@@ -278,9 +278,7 @@ impl AppCore {
 
     pub async fn run_maintenance(&self, device_id: i64) -> Result<()> {
         let dev = self.load_device(device_id).await?;
-        self.engine
-            .run_maintenance(&dev, crate::model::time::now_ms())
-            .await
+        self.engine.run_maintenance(&dev).await
     }
 
     pub async fn check_connectivity(&self, device_id: i64) -> Result<DeviceConnectivity> {
