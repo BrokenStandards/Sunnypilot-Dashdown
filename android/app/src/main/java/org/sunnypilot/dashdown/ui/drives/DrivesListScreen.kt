@@ -180,8 +180,9 @@ private fun DriveRow(
     onDownload: () -> Unit,
     onCancel: () -> Unit,
 ) {
-  // Resolve this drive's thumbnail once it scrolls into view (only visible rows hit the core).
-  LaunchedEffect(drive.driveKey) { onRequestThumbnail() }
+  // Resolve this drive's thumbnail when it scrolls into view, and again whenever its sync state
+  // changes (e.g. NotDownloaded → Complete) so a freshly-downloaded drive gets a frame.
+  LaunchedEffect(drive.driveKey, drive.syncState) { onRequestThumbnail() }
   val downloading = live != null && live.terminal == null
   val status = if (downloading) SyncStatus.DOWNLOADING else drive.syncState
   ListItem(

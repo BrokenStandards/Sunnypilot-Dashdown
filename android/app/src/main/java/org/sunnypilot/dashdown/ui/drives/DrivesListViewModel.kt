@@ -29,8 +29,9 @@ class DrivesListViewModel(private val repo: DashdownRepository, private val devi
   val progress: StateFlow<Map<String, DriveProgress>> = repo.progress
 
   /**
-   * Per-drive thumbnail source: the first complete `qcamera.ts` path, or null (none mirrored yet).
-   * A present key means "already resolved" (even if null), so rows request at most once each.
+   * Per-drive thumbnail source: the first complete `qcamera.ts` path once resolved. A row
+   * (re)requests whenever its drive's sync state changes, so a freshly-downloaded drive gets a
+   * frame; an entry is stored only once a real path is found (absent = not resolvable yet).
    */
   private val _thumbnails = MutableStateFlow<Map<String, String?>>(emptyMap())
   val thumbnails: StateFlow<Map<String, String?>> = _thumbnails.asStateFlow()
@@ -48,12 +49,7 @@ class DrivesListViewModel(private val repo: DashdownRepository, private val devi
       }
     }
     // A download finishing (complete/failed) changes sync state — reclassify from disk.
-    viewModelScope.launch {
-      repo.terminalEvents.collect { ev ->
-        _thumbnails.update { it - ev.driveKey } // files may now exist → re-resolve its thumbnail
-        loadOffline()
-      }
-    }
+    viewModelScope.launch { repo.terminalEvents.collect { loadOffline() } }
   }
 
   /** Fast, network-free load that reclassifies sync state from the local mirror. */
@@ -88,10 +84,9 @@ class DrivesListViewModel(private val repo: DashdownRepository, private val devi
     }
   }
 
-  /** Resolve [drive]'s thumbnail source once (called lazily by its row on first composition). */
+  /** Resolve [drive]'s thumbnail source (called by its row on first composition + sync changes). */
   fun requestThumbnail(drive: Drive) {
-    if (_thumbnails.value.containsKey(drive.driveKey)) return
-    _thumbnails.update { it + (drive.driveKey to null) } // mark in-flight; don't re-request
+    if (_thumbnails.value[drive.driveKey] != null) return // already have a frame source
     viewModelScope.launch {
       val path =
           runCatching {
