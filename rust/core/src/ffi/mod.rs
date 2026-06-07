@@ -315,6 +315,41 @@ impl AppCore {
             .await
     }
 
+    /// Return a path the native player can open for this segment's `kind` stream,
+    /// remuxing on demand if needed. `qcamera.ts` (already playable) and any
+    /// non-video kind return their source path unchanged; the HD HEVC cameras
+    /// (`f`/`e`/`d`camera) return a cached `*.hevc.mp4` derived once via a lossless
+    /// HEVC→MP4 remux (see [`crate::video`]). `None` if the source isn't mirrored.
+    ///
+    /// The remux is CPU/IO-bound (reads the whole `.hevc`) so it runs on the
+    /// blocking pool; a second call for the same file reuses the cached MP4.
+    pub async fn ensure_playable(
+        &self,
+        device_id: i64,
+        drive_key: String,
+        segment_num: u32,
+        kind: FileKind,
+    ) -> Result<Option<String>> {
+        let Some(src) = self
+            .local_file_path(device_id, drive_key, segment_num, kind)
+            .await?
+        else {
+            return Ok(None);
+        };
+        // Only the raw HEVC cameras need remuxing; everything else plays as-is.
+        if !matches!(
+            kind,
+            FileKind::FCamera | FileKind::ECamera | FileKind::DCamera
+        ) {
+            return Ok(Some(src));
+        }
+        let src_path = PathBuf::from(src);
+        let dst = tokio::task::spawn_blocking(move || crate::video::ensure_playable_mp4(&src_path))
+            .await
+            .map_err(|e| CoreError::Io(format!("remux task join: {e}")))??;
+        Ok(Some(dst.to_string_lossy().into_owned()))
+    }
+
     pub async fn run_maintenance(&self, device_id: i64) -> Result<()> {
         let dev = self.load_device(device_id).await?;
         self.engine.run_maintenance(&dev).await
