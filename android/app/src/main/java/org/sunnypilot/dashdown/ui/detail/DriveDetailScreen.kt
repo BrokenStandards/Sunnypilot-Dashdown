@@ -9,7 +9,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -31,23 +30,17 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import androidx.media3.common.MediaItem
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.PlayerView
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -166,8 +159,8 @@ fun DriveDetailScreen(
                   )
                 }
 
-                state.playablePath?.let { path ->
-                  DrivePlayer(path, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
+                if (state.playablePaths.isNotEmpty()) {
+                  DrivePlayer(state.playablePaths, Modifier.fillMaxWidth())
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -214,23 +207,6 @@ private fun SegmentBlock(seg: Segment) {
       )
     }
   }
-}
-
-@Composable
-private fun DrivePlayer(path: String, modifier: Modifier) {
-  val context = LocalContext.current
-  val player =
-      remember(path) {
-        ExoPlayer.Builder(context).build().apply {
-          setMediaItem(MediaItem.fromUri(Uri.fromFile(File(path))))
-          prepare()
-        }
-      }
-  DisposableEffect(path) { onDispose { player.release() } }
-  AndroidView(
-      factory = { PlayerView(it).apply { this.player = player } },
-      modifier = modifier.testTag("drive_detail_player"),
-  )
 }
 
 /** Core writes the zip to a temp file; we stream it to the user-chosen SAF document. */

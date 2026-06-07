@@ -15,7 +15,7 @@ import uniffi.dashdown_core.SegmentName
 import uniffi.dashdown_core.SyncStatus
 
 /**
- * Step-6 Compose test for the stateless drive-detail screen. Renders with `playablePath = null` so
+ * Step-6 Compose test for the stateless drive-detail screen. Renders with `playablePaths` empty so
  * the ExoPlayer isn't instantiated; verifies the header, the download + export actions, and the
  * segment/file listing.
  */
@@ -59,7 +59,7 @@ class DriveDetailScreenTest {
         DriveDetailScreen(
             state =
                 DriveDetailUiState(
-                    drive = drive, status = status, loading = false, playablePath = null),
+                    drive = drive, status = status, loading = false, playablePaths = emptyList()),
             live = null,
             onBack = {},
             onPreserve = {},
