@@ -19,7 +19,7 @@ use crate::connectivity::DeviceConnectivity;
 use crate::db::Repo;
 use crate::error::{CoreError, Result};
 use crate::logging::{LogLevel, LogSink};
-use crate::model::{ConnMode, Device, Drive, JobState, SyncStatus};
+use crate::model::{ConnMode, Device, Drive, FileKind, JobState, SyncStatus};
 use crate::settings::DeviceSettings;
 use crate::storage::{paths::file_rel, MirrorStore};
 use crate::sync_engine::{
@@ -38,6 +38,15 @@ pub struct DriveSyncStatus {
     pub bytes_done: u64,
     pub bytes_total: u64,
     pub error: Option<String>,
+}
+
+/// One mirrored segment file's absolute on-disk location, returned by
+/// `AppCore::drive_local_paths` (ordered by `segment_num`). The native players
+/// build a per-camera timeline from these instead of hand-constructing paths.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SegmentPath {
+    pub segment_num: u32,
+    pub path: String,
 }
 
 /// The root object the native layer constructs once and holds for the app's
@@ -276,6 +285,36 @@ impl AppCore {
         .map_err(|e| CoreError::Io(format!("zip task join: {e}")))?
     }
 
+    /// Absolute on-disk path of one downloaded segment file, or `None` if that
+    /// file isn't completely mirrored. The single source of truth for local paths
+    /// — native layers must not hand-build mirror paths (the footage base lives at
+    /// [`REALDATA_REL`]). `kind` selects the stream; the concrete filename comes
+    /// from the drive index, so `.zst`/`.bz2` log variants resolve correctly.
+    pub async fn local_file_path(
+        &self,
+        device_id: i64,
+        drive_key: String,
+        segment_num: u32,
+        kind: FileKind,
+    ) -> Result<Option<String>> {
+        let paths = self
+            .resolve_local_paths(device_id, drive_key, kind, Some(segment_num))
+            .await?;
+        Ok(paths.into_iter().next().map(|sp| sp.path))
+    }
+
+    /// Every completely-mirrored file of `kind` in the drive, ordered by
+    /// `segment_num` — the input for a continuous per-camera playback timeline.
+    pub async fn drive_local_paths(
+        &self,
+        device_id: i64,
+        drive_key: String,
+        kind: FileKind,
+    ) -> Result<Vec<SegmentPath>> {
+        self.resolve_local_paths(device_id, drive_key, kind, None)
+            .await
+    }
+
     pub async fn run_maintenance(&self, device_id: i64) -> Result<()> {
         let dev = self.load_device(device_id).await?;
         self.engine.run_maintenance(&dev).await
@@ -307,6 +346,46 @@ impl AppCore {
         self.db(move |r| r.get_device(id))
             .await?
             .ok_or_else(|| CoreError::NotFound(format!("device {id}")))
+    }
+
+    /// Shared resolver for [`local_file_path`]/[`drive_local_paths`]: load the
+    /// drive, then for each segment (optionally only `only_segment`) emit the
+    /// absolute path of its `kind` file when that file is fully mirrored. Runs the
+    /// DB read + filesystem stats on the blocking pool.
+    async fn resolve_local_paths(
+        &self,
+        device_id: i64,
+        drive_key: String,
+        kind: FileKind,
+        only_segment: Option<u32>,
+    ) -> Result<Vec<SegmentPath>> {
+        let repo = self.repo.clone();
+        let mirror_root = self.engine.mirror_root().to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let drive = repo
+                .get_drive(device_id, &drive_key)?
+                .ok_or_else(|| CoreError::NotFound(format!("drive {drive_key}")))?;
+            let mirror = MirrorStore::new(mirror_root.join(device_id.to_string()));
+            let mut out = Vec::new();
+            for seg in &drive.segments {
+                if only_segment.is_some_and(|n| n != seg.name.segment_num) {
+                    continue;
+                }
+                let Some(file) = seg.files.iter().find(|f| f.kind == kind) else {
+                    continue;
+                };
+                let rel = file_rel(REALDATA_REL, &seg.name, &file.name);
+                if mirror.is_complete(&rel) {
+                    out.push(SegmentPath {
+                        segment_num: seg.name.segment_num,
+                        path: mirror.final_path(&rel)?.to_string_lossy().into_owned(),
+                    });
+                }
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| CoreError::Io(format!("path task join: {e}")))?
     }
 }
 

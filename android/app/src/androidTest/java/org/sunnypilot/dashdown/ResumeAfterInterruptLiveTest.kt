@@ -9,12 +9,14 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import uniffi.dashdown_core.ConnMode
 import uniffi.dashdown_core.Device
+import uniffi.dashdown_core.FileKind
 import uniffi.dashdown_core.FileSelection
 import uniffi.dashdown_core.SyncStatus
 
@@ -59,13 +61,13 @@ class ResumeAfterInterruptLiveTest {
       repo.startDriveDownload(device.id, key)
       awaitStatus(device.id, key, SyncStatus.COMPLETE)
 
-      // Lose one downloaded file (simulates an interrupted/partial transfer).
+      // Lose one downloaded file (simulates an interrupted/partial transfer). Resolve its on-disk
+      // path via the core accessor — the single source of truth for the mirror layout.
       val drive = repo.getDrive(device.id, key)
       val seg = drive.segments.first().name
-      val lost =
-          File(
-              app.locator.mirrorRoot,
-              "${device.id}/realdata/${seg.routeId}--${seg.segmentNum}/qcamera.ts")
+      val path = repo.localFilePath(device.id, key, seg.segmentNum, FileKind.Q_CAMERA)
+      assertNotNull("the downloaded file should resolve before deletion", path)
+      val lost = File(path!!)
       assertTrue("the downloaded file should exist before deletion", lost.exists())
       assertTrue("delete should succeed", lost.delete())
 

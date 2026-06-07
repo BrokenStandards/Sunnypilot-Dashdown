@@ -11,6 +11,7 @@ import org.sunnypilot.dashdown.data.DashdownRepository
 import org.sunnypilot.dashdown.data.DriveProgress
 import org.sunnypilot.dashdown.data.UiError
 import uniffi.dashdown_core.Drive
+import uniffi.dashdown_core.FileKind
 
 data class DrivesUiState(
     val drives: List<Drive> = emptyList(),
@@ -27,6 +28,13 @@ class DrivesListViewModel(private val repo: DashdownRepository, private val devi
   /** Live download progress keyed by driveKey (drives the Downloading badge). */
   val progress: StateFlow<Map<String, DriveProgress>> = repo.progress
 
+  /**
+   * Per-drive thumbnail source: the first complete `qcamera.ts` path, or null (none mirrored yet).
+   * A present key means "already resolved" (even if null), so rows request at most once each.
+   */
+  private val _thumbnails = MutableStateFlow<Map<String, String?>>(emptyMap())
+  val thumbnails: StateFlow<Map<String, String?>> = _thumbnails.asStateFlow()
+
   init {
     // First visit: show the local mirror immediately, then auto-sync online if it's empty (a
     // freshly-added device has nothing locally yet, and pull-to-refresh can't help an empty list).
@@ -40,7 +48,12 @@ class DrivesListViewModel(private val repo: DashdownRepository, private val devi
       }
     }
     // A download finishing (complete/failed) changes sync state — reclassify from disk.
-    viewModelScope.launch { repo.terminalEvents.collect { loadOffline() } }
+    viewModelScope.launch {
+      repo.terminalEvents.collect { ev ->
+        _thumbnails.update { it - ev.driveKey } // files may now exist → re-resolve its thumbnail
+        loadOffline()
+      }
+    }
   }
 
   /** Fast, network-free load that reclassifies sync state from the local mirror. */
@@ -72,6 +85,23 @@ class DrivesListViewModel(private val repo: DashdownRepository, private val devi
     viewModelScope.launch {
       runCatching { repo.setPreserved(deviceId, drive.driveKey, !drive.preserved) }
       loadOffline()
+    }
+  }
+
+  /** Resolve [drive]'s thumbnail source once (called lazily by its row on first composition). */
+  fun requestThumbnail(drive: Drive) {
+    if (_thumbnails.value.containsKey(drive.driveKey)) return
+    _thumbnails.update { it + (drive.driveKey to null) } // mark in-flight; don't re-request
+    viewModelScope.launch {
+      val path =
+          runCatching {
+                repo
+                    .driveLocalPaths(deviceId, drive.driveKey, FileKind.Q_CAMERA)
+                    .firstOrNull()
+                    ?.path
+              }
+              .getOrNull()
+      if (path != null) _thumbnails.update { it + (drive.driveKey to path) }
     }
   }
 }
