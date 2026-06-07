@@ -27,9 +27,13 @@ use crate::storage::{
     MirrorStore,
 };
 
-/// Segments path under each device's copyparty root.
-/// (TODO: make device-configurable if a device serves realdata elsewhere.)
-pub const REALDATA_REL: &str = "realdata/";
+/// URL-relative path under each device's copyparty root where drive segments are
+/// served. sunnypilot's manager publishes the on-disk `realdata/` directory at the
+/// copyparty URL alias `/routes` — read-only, anonymous (see
+/// `ref/sunnypilot/system/manager/process_config.py`) — so against a real device
+/// this is `routes/`, not `realdata/`. (TODO: make device-configurable if a device
+/// ever serves footage elsewhere.)
+pub const REALDATA_REL: &str = "routes/";
 
 /// One selected file to (maybe) download.
 struct Item {
@@ -184,66 +188,17 @@ impl SyncEngine {
         Ok(pruned)
     }
 
-    /// Auto-delete eligible drives' footage from the comma device, keeping the
-    /// local copy. A drive is deleted only when it passes the eligibility guard
-    /// (Complete + not recording + at least `auto_delete_min_age_min` old) AND a
-    /// fresh remote re-list still shows it Complete for the active selection — so
-    /// a drive that grew or changed since the last index is left alone. Deletes
-    /// whole segment directories recursively. No-op unless the device has
-    /// `auto_delete_from_comma` enabled. `now_ms` is injected for determinism.
-    /// Returns the drive_keys whose remote footage was deleted.
-    pub async fn auto_delete_from_comma(
-        &self,
-        device: &Device,
-        now_ms: i64,
-    ) -> Result<Vec<String>> {
-        if !device.auto_delete_from_comma {
-            return Ok(Vec::new());
-        }
-        let device_id = device.id;
-        let selection = device.file_selection;
-        let min_age = device.auto_delete_min_age_min;
-
-        let drives = db(self.repo.clone(), move |r| r.get_drives(device_id)).await?;
-        let candidates: Vec<&Drive> = drives
-            .iter()
-            .filter(|d| retention::eligible_for_remote_delete(d, now_ms, min_age))
-            .collect();
-        if candidates.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Fresh remote snapshot for the re-verify guard.
-        let client = Self::client_for(device)?;
-        let fresh = client.list_segments(REALDATA_REL).await?;
-        let regrouped = group_segments(fresh);
-        let mirror = self.mirror_for(device);
-
-        let mut deleted = Vec::new();
-        for cand in candidates {
-            let Some(fresh_drive) = regrouped.iter().find(|d| d.drive_key == cand.drive_key) else {
-                continue; // already gone remotely — nothing to delete
-            };
-            // Re-verify against current remote: a grown/changed drive is Partial.
-            if fresh_drive.recording
-                || resume::drive_status(&mirror, fresh_drive, &selection, REALDATA_REL)
-                    != SyncStatus::Complete
-            {
-                continue;
-            }
-            for target in retention::remote_delete_targets(fresh_drive, REALDATA_REL) {
-                client.delete(&target).await?;
-            }
-            deleted.push(cand.drive_key.clone());
-        }
-        Ok(deleted)
-    }
-
-    /// Phase-B maintenance pass: free local space first (retention), then reclaim
-    /// remote space for what is safely mirrored (auto-delete-from-comma).
-    pub async fn run_maintenance(&self, device: &Device, now_ms: i64) -> Result<()> {
+    /// Phase-B maintenance pass: free local space by enforcing the device's
+    /// retention budget.
+    ///
+    /// Remote auto-delete-from-comma was removed: sunnypilot publishes footage on a
+    /// **read-only** copyparty volume (`/routes`, no delete permission), so a WebDAV
+    /// `DELETE` is rejected (401/403) and cannot prune the device. Reclaiming space
+    /// on the comma will return via an SSH-based sync/delete path in a later phase;
+    /// the `auto_delete_from_comma` / `auto_delete_min_age_min` settings are retained
+    /// (and surfaced in the UI) to drive that future mechanism.
+    pub async fn run_maintenance(&self, device: &Device) -> Result<()> {
         self.enforce_retention(device).await?;
-        self.auto_delete_from_comma(device, now_ms).await?;
         Ok(())
     }
 

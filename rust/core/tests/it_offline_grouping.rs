@@ -11,11 +11,11 @@ use mock_copyparty::{fixtures, Fixture, MockServer};
 async fn assert_offline_matches_online(fixture: Fixture) {
     // Capture the realdata path before `spawn` consumes the Fixture (the temp dir
     // stays alive inside the returned MockServer).
-    let realdata = fixture.path().join("realdata");
+    let realdata = fixture.path().join("routes");
     let srv = MockServer::spawn(fixture, None).await.unwrap();
     let client = CopypartyClient::new(srv.base_url(), Credentials::Anonymous).unwrap();
 
-    let online = group_remote(&client, "realdata/").await.unwrap();
+    let online = group_remote(&client, "routes/").await.unwrap();
     let offline = group_local(&realdata).unwrap();
 
     assert!(
@@ -48,7 +48,7 @@ async fn partial_offline_equals_online() {
 #[test]
 fn scan_ignores_part_files() {
     let dir = tempfile::tempdir().unwrap();
-    let rd = dir.path().join("realdata");
+    let rd = dir.path().join("routes");
     let route = "000001a3--c20ba54385";
     for n in 0..2 {
         let seg = rd.join(format!("{route}--{n}"));

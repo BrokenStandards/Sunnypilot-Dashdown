@@ -21,7 +21,7 @@ use wiremock::{Mock, MockServer as WireServer, ResponseTemplate};
 const ROUTE: &str = "000001a3--c20ba54385";
 
 fn rel(route: &str, n: u32, name: &str) -> String {
-    format!("realdata/{route}--{n}/{name}")
+    format!("routes/{route}--{n}/{name}")
 }
 
 fn device_at(addr: SocketAddr, selection: FileSelection) -> Device {
@@ -97,7 +97,7 @@ async fn synced_and_downloaded(
     sel: FileSelection,
 ) -> (Setup, MockServer, Device, String, std::path::PathBuf) {
     let fixture = fixtures::single_drive();
-    let realdata = fixture.path().join("realdata"); // capture before spawn consumes it
+    let realdata = fixture.path().join("routes"); // capture before spawn consumes it
     let srv = MockServer::spawn(fixture, None).await.unwrap();
     let s = setup();
     let mut dev = device_at(srv.addr(), sel);

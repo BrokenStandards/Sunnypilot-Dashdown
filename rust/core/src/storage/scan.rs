@@ -1,5 +1,5 @@
 //! Local twin of [`CopypartyClient::list_segments`](crate::copyparty_client::CopypartyClient::list_segments):
-//! reconstruct `Vec<Segment>` from the mirror's `realdata` directory.
+//! reconstruct `Vec<Segment>` from the mirror's `routes` directory.
 //!
 //! `SegmentFile::remote_size` carries the **on-disk** length here (for a complete
 //! mirror local == remote; the real local/remote split is the M5 DB `local_size`
@@ -13,7 +13,7 @@ use std::time::UNIX_EPOCH;
 use crate::error::Result;
 use crate::model::{FileKind, Segment, SegmentFile, SegmentName};
 
-/// Scan `realdata_dir` (`<mirror>/realdata`) into the same `Vec<Segment>` shape
+/// Scan `realdata_dir` (`<mirror>/routes`) into the same `Vec<Segment>` shape
 /// `list_segments` produces from the server, so `group_segments` is shared.
 pub fn scan_segments(realdata_dir: &Path) -> Result<Vec<Segment>> {
     let mut segments = Vec::new();

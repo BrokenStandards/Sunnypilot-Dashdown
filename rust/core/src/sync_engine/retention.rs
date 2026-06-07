@@ -1,10 +1,8 @@
-//! Pure storage-management policy for M6: which local drives to prune to fit a
-//! retention budget, and whether a drive may be auto-deleted from the comma
-//! device. All functions here are side-effect-free and unit-testable; the
-//! [`SyncEngine`](super::SyncEngine) does the actual file/DB/HTTP work.
+//! Pure storage-management policy: which local drives to prune to fit a retention
+//! budget. Side-effect-free and unit-testable; the [`SyncEngine`](super::SyncEngine)
+//! does the actual file/DB work.
 
 use crate::model::{Drive, SyncStatus};
-use crate::storage::paths::dir_rel;
 
 /// Whether a drive holds local data that occupies mirror space (and so counts
 /// toward the retention budget). `Downloading` is excluded — it is an in-flight
@@ -59,36 +57,10 @@ pub fn plan_prune(drives: &[Drive], budget_minutes: Option<i64>) -> Vec<String> 
     prune
 }
 
-/// Whether a drive may be auto-deleted from the comma device. All three guards
-/// must hold: the selection is fully mirrored (`Complete`), the drive is not
-/// actively recording, and its last segment ended at least `min_age_min` ago
-/// (so the device is no longer writing to it). `now_ms`/`end_ms` are epoch ms;
-/// `end_ms == None` ⇒ ineligible (age cannot be proven). Pure + injectable clock.
-pub fn eligible_for_remote_delete(drive: &Drive, now_ms: i64, min_age_min: i64) -> bool {
-    drive.sync_state == SyncStatus::Complete
-        && !drive.recording
-        && drive
-            .end_ms
-            .is_some_and(|end| now_ms - end >= min_age_min * 60_000)
-}
-
-/// The remote paths to delete for one drive: the whole segment directories
-/// (recursive on the server), maximizing reclaimed device space. One entry per
-/// segment, each with a trailing slash (see [`dir_rel`]).
-pub fn remote_delete_targets(drive: &Drive, realdata_rel: &str) -> Vec<String> {
-    drive
-        .segments
-        .iter()
-        .map(|seg| dir_rel(realdata_rel, &seg.name))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{Segment, SegmentName};
-
-    const RR: &str = "realdata/";
 
     /// A drive with `n` segments, the given local-data status and pin, timed so
     /// that a larger `end` is "newer".
@@ -233,72 +205,5 @@ mod tests {
         // Both end at 1000; start_ms equal; last_seg equal; key "b">"a" so b is
         // "newer" → a pruned. Budget 5 keeps one.
         assert_eq!(plan_prune(&d, Some(5)), vec!["a--0".to_string()]);
-    }
-
-    // ---- eligible_for_remote_delete --------------------------------------
-
-    const MIN_AGE: i64 = 30; // minutes
-    const AGE_MS: i64 = MIN_AGE * 60_000;
-
-    #[test]
-    fn eligible_exactly_at_min_age() {
-        let d = drive("a", 1, Some(0), SyncStatus::Complete, false);
-        assert!(eligible_for_remote_delete(&d, AGE_MS, MIN_AGE));
-    }
-
-    #[test]
-    fn ineligible_one_ms_under_min_age() {
-        let d = drive("a", 1, Some(0), SyncStatus::Complete, false);
-        assert!(!eligible_for_remote_delete(&d, AGE_MS - 1, MIN_AGE));
-    }
-
-    #[test]
-    fn ineligible_when_recording() {
-        let mut d = drive("a", 1, Some(0), SyncStatus::Complete, false);
-        d.recording = true;
-        assert!(!eligible_for_remote_delete(&d, AGE_MS, MIN_AGE));
-    }
-
-    #[test]
-    fn ineligible_when_not_complete() {
-        for state in [
-            SyncStatus::NotDownloaded,
-            SyncStatus::Partial,
-            SyncStatus::Downloading,
-            SyncStatus::Failed,
-        ] {
-            let d = drive("a", 1, Some(0), state, false);
-            assert!(
-                !eligible_for_remote_delete(&d, AGE_MS, MIN_AGE),
-                "{state:?} must not be eligible"
-            );
-        }
-    }
-
-    #[test]
-    fn ineligible_when_end_ms_unknown() {
-        let d = drive("a", 1, None, SyncStatus::Complete, false);
-        assert!(!eligible_for_remote_delete(&d, AGE_MS, MIN_AGE));
-    }
-
-    // ---- remote_delete_targets -------------------------------------------
-
-    #[test]
-    fn delete_targets_are_segment_dirs() {
-        let d = drive(
-            "000001a3--c20ba54385",
-            3,
-            Some(1_000),
-            SyncStatus::Complete,
-            false,
-        );
-        assert_eq!(
-            remote_delete_targets(&d, RR),
-            vec![
-                "realdata/000001a3--c20ba54385--0/".to_string(),
-                "realdata/000001a3--c20ba54385--1/".to_string(),
-                "realdata/000001a3--c20ba54385--2/".to_string(),
-            ]
-        );
     }
 }

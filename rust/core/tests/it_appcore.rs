@@ -219,9 +219,9 @@ async fn appcore_end_to_end() {
 async fn appcore_cancel_stops_download() {
     let seg = "000001a3--c20ba54385--0";
     let server = WireServer::start().await;
-    // realdata/ listing -> one segment dir.
+    // routes/ listing -> one segment dir.
     Mock::given(method("GET"))
-        .and(path("/realdata/"))
+        .and(path("/routes/"))
         .and(query_param("ls", "j"))
         .respond_with(ResponseTemplate::new(200).set_body_string(format!(
             r#"{{"dirs":[{{"href":"{seg}/","sz":0,"ts":1690000000}}],"files":[]}}"#
@@ -230,7 +230,7 @@ async fn appcore_cancel_stops_download() {
         .await;
     // segment listing -> one qcamera file.
     Mock::given(method("GET"))
-        .and(path(format!("/realdata/{seg}/")))
+        .and(path(format!("/routes/{seg}/")))
         .and(query_param("ls", "j"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
             r#"{"dirs":[],"files":[{"href":"qcamera.ts","sz":1200,"ts":1690000000}]}"#,
@@ -239,7 +239,7 @@ async fn appcore_cancel_stops_download() {
         .await;
     // file GET stalls 30s so the download is in-flight when we cancel.
     Mock::given(method("GET"))
-        .and(path(format!("/realdata/{seg}/qcamera.ts")))
+        .and(path(format!("/routes/{seg}/qcamera.ts")))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_bytes(vec![0u8; 1200])
