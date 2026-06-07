@@ -1,5 +1,9 @@
 # Route Media Player (camera-focused)
 
+> **Naming:** a post-B2 UX track, added now that the basic app shell works. Its milestones are
+> labeled **RP1/RP2/RP3** to avoid colliding with the master plan's core milestones (M0–M8) and
+> Phase B/C. It builds on top of the master-plan roadmap; it does not change it.
+
 ## Context
 
 Downloaded routes are currently a dead end: the drives list shows only text rows, and the
@@ -61,7 +65,7 @@ segment's qcamera actually has an audio track (detect via Media3 `Tracks`).
 
 ## Milestones (each: build + test + commit; its own PR to `main`)
 
-### M1 — Path accessor (fixes the regression) + drives-list thumbnails
+### RP1 — Path accessor (fixes the regression) + drives-list thumbnails — ✅ done (PR #22)
 - **Rust** ([ffi/mod.rs](rust/core/src/ffi/mod.rs)): add the single source of truth for on-disk paths,
   reusing `file_rel(REALDATA_REL, …)` + `MirrorStore::final_path` (returns `None` if not complete):
   ```
@@ -82,7 +86,10 @@ segment's qcamera actually has an audio track (detect via Media3 `Tracks`).
   screen resolves a real qcamera path from a mock mirror; list thumbnail renders. Manual: open a
   downloaded drive on the Pixel and confirm playback works again (regression gone).
 
-### M2 — Real qcamera detail player: scrubber + filmstrip + audio (Android-only)
+### RP2 — Real qcamera detail player: scrubber + filmstrip + audio (Android-only)
+- **Spans the whole drive (headline requirement):** the player + scrubber treat ALL of a drive's
+  qcamera segments as ONE continuous timeline in route µs — never per-segment. Play and seek cross
+  1-minute segment boundaries seamlessly (no gap, no stutter, no per-segment UI).
 - Rebuild `DrivePlayer` in [DriveDetailScreen.kt](android/app/src/main/java/org/sunnypilot/dashdown/ui/detail/DriveDetailScreen.kt):
   `ConcatenatingMediaSource` over the drive's qcamera segments → one continuous timeline; a Compose
   scrubber bound to `route_us`; a `LazyRow` thumbnail **filmstrip** (frames every N seconds via
@@ -92,7 +99,7 @@ segment's qcamera actually has an audio track (detect via Media3 `Tracks`).
 - **Tests:** instrumented scrub (seek lands within 1 frame), filmstrip count + cache hit, audio
   toggle hidden when no track. Manual on Pixel.
 
-### M3 — Multi-camera HD: lazy remux + tiling + same-frame switching
+### RP3 — Multi-camera HD: lazy remux + tiling + same-frame switching
 - **Rust** new module `rust/core/src/video/{mod.rs,remux.rs}`: raw HEVC Annex-B → fragmented MP4
   (`-c copy`, `hvc1`), VPS/SPS/PPS parse, 20 fps timing, `moov/moof/mdat` writer. Use a pure-Rust
   mp4 muxer crate (evaluate `mp4`/`re-mp4` for `hvc1`; else a small hand-rolled box writer) — **no
@@ -123,7 +130,7 @@ master-clock/sync controller. Both consume the same FFI + the same `route_us` ti
 
 ## Risks / verify early
 - Verify a round-tripped fMP4 actually **plays + seeks frame-accurately** on the Pixel decoder
-  before building the multi-cam UI on it (do this first thing in M3).
+  before building the multi-cam UI on it (do this first thing in RP3).
 - Pick the mp4 muxer carefully — confirm `hvc1`/HEVC sample-entry support; hand-roll a minimal box
   writer if no crate fits. No C deps (clean Android cross-compile).
 - Multi-HEVC decode is the worst case for battery/thermals — measure; cap simultaneous HD tiles if

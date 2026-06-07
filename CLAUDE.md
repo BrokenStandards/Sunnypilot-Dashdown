@@ -7,7 +7,7 @@ Sunnypilot openpilot fork, where footage is served over a **copyparty** file ser
 storage, sync/resume engine, retention, connectivity, rusqlite index) exposed over **UniFFI**
 to **native UIs** — SwiftUI (iOS) and Jetpack Compose (Android). Full detail and the milestone
 breakdown live in [.claude/plans/sunnypilot-dashdown-master-plan.md](.claude/plans/sunnypilot-dashdown-master-plan.md).
-Phase 0 bootstrap is recorded in [.claude/plans/imperative-roaming-valiant.md](.claude/plans/imperative-roaming-valiant.md).
+Phase 0 bootstrap is recorded in `.claude/plans/Phase 0 — Environment Bootstrap & Reference Setup.md`.
 
 ## Reference source — `ref/` (read-only, gitignored)
 
