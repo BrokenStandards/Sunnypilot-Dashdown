@@ -12,6 +12,8 @@ import uniffi.dashdown_core.DeviceConnectivity
 import uniffi.dashdown_core.DeviceSettings
 import uniffi.dashdown_core.Drive
 import uniffi.dashdown_core.DriveSyncStatus
+import uniffi.dashdown_core.FileKind
+import uniffi.dashdown_core.SegmentPath
 import uniffi.dashdown_core.SyncHandle
 
 /**
@@ -74,6 +76,20 @@ class DashdownRepository(private val locator: ServiceLocator) {
   suspend fun setPreserved(deviceId: Long, driveKey: String, preserved: Boolean) = io {
     locator.core.setPreserved(deviceId, driveKey, preserved)
   }
+
+  /** Absolute path of a downloaded file (one stream of one segment), or null if not mirrored. */
+  suspend fun localFilePath(
+      deviceId: Long,
+      driveKey: String,
+      segmentNum: UInt,
+      kind: FileKind,
+  ): String? = io { locator.core.localFilePath(deviceId, driveKey, segmentNum, kind) }
+
+  /** Ordered absolute paths of every mirrored file of [kind] in the drive (complete only). */
+  suspend fun driveLocalPaths(deviceId: Long, driveKey: String, kind: FileKind): List<SegmentPath> =
+      io {
+        locator.core.driveLocalPaths(deviceId, driveKey, kind)
+      }
 
   // --- Downloads / maintenance / connectivity ---
   suspend fun startDriveDownload(deviceId: Long, driveKey: String): SyncHandle = io {

@@ -2,7 +2,6 @@ package org.sunnypilot.dashdown.ui.detail
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -13,6 +12,7 @@ import org.sunnypilot.dashdown.data.DriveProgress
 import org.sunnypilot.dashdown.data.UiError
 import uniffi.dashdown_core.Drive
 import uniffi.dashdown_core.DriveSyncStatus
+import uniffi.dashdown_core.FileKind
 
 data class DriveDetailUiState(
     val drive: Drive? = null,
@@ -49,7 +49,7 @@ class DriveDetailViewModel(
               status = status,
               loading = false,
               error = null,
-              playablePath = resolvePlayable(drive),
+              playablePath = resolvePlayable(),
           )
         }
       } catch (t: Throwable) {
@@ -66,14 +66,13 @@ class DriveDetailViewModel(
     }
   }
 
-  /** First complete `qcamera.ts` on disk, mirror layout `{root}/{deviceId}/realdata/{seg}/file`. */
-  private fun resolvePlayable(drive: Drive): String? {
-    val root = repo.mirrorRoot
-    for (seg in drive.segments) {
-      val dir = File(root, "$deviceId/realdata/${seg.name.routeId}--${seg.name.segmentNum}")
-      val qcam = File(dir, "qcamera.ts")
-      if (qcam.exists() && qcam.length() > 0) return qcam.absolutePath
-    }
-    return null
-  }
+  /**
+   * First complete `qcamera.ts` in this drive, resolved by the core (the single source of truth for
+   * on-disk paths — see `AppCore.driveLocalPaths`). Returns null if nothing is mirrored yet.
+   */
+  private suspend fun resolvePlayable(): String? =
+      runCatching {
+            repo.driveLocalPaths(deviceId, driveKey, FileKind.Q_CAMERA).firstOrNull()?.path
+          }
+          .getOrNull()
 }

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use dashdown_core::ffi::AppCore;
 use dashdown_core::logging::{LogEvent, LogLevel, LogSink};
-use dashdown_core::model::{ConnDot, ConnMode, Device, FileSelection, SyncStatus};
+use dashdown_core::model::{ConnDot, ConnMode, Device, FileKind, FileSelection, SyncStatus};
 use dashdown_core::sync_engine::{DownloadProgress, ProgressSink};
 use mock_copyparty::{fixtures, MockServer};
 use wiremock::matchers::{method, path, query_param};
@@ -302,6 +302,78 @@ async fn appcore_export_skips_incomplete_files() {
     // Parent dirs were created and the archive opens — just with no entries.
     let archive = zip::ZipArchive::new(std::fs::File::open(&dest).unwrap()).unwrap();
     assert_eq!(archive.len(), 0, "no complete files -> empty archive");
+}
+
+/// M1 path accessors: after downloading the previews-only single_drive, the new
+/// `drive_local_paths` / `local_file_path` resolve real on-disk qcamera files
+/// (ordered, complete-only, under the `routes/` base) and return `None` for a
+/// stream/segment that isn't present — the single source of truth the player uses.
+#[tokio::test(flavor = "multi_thread")]
+async fn appcore_resolves_local_paths_after_download() {
+    let tmp = tempfile::tempdir().unwrap();
+    let srv = MockServer::spawn(fixtures::single_drive(), None)
+        .await
+        .unwrap();
+    let core = app(tmp.path());
+    let id = core.add_device(device_at(srv.addr())).await.unwrap().id;
+
+    let recorder = Arc::new(Recorder::default());
+    core.set_progress_sink(Some(recorder.clone() as Arc<dyn ProgressSink>));
+    let dk = core.sync_now(id).await.unwrap()[0].drive_key.clone();
+    core.start_drive_download(id, dk.clone()).await.unwrap();
+    let mut waited = 0;
+    while recorder.completed.lock().unwrap().is_empty() && waited < 200 {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        waited += 1;
+    }
+    assert!(
+        !recorder.completed.lock().unwrap().is_empty(),
+        "download finished"
+    );
+
+    // drive_local_paths(QCamera): 3 ordered, existing qcamera.ts files under routes/.
+    let paths = core
+        .drive_local_paths(id, dk.clone(), FileKind::QCamera)
+        .await
+        .unwrap();
+    assert_eq!(
+        paths.iter().map(|p| p.segment_num).collect::<Vec<_>>(),
+        vec![0, 1, 2],
+        "ordered by segment_num (single_drive = 3 segments)"
+    );
+    for sp in &paths {
+        assert!(sp.path.ends_with("qcamera.ts"), "{}", sp.path);
+        assert!(
+            sp.path.contains("/routes/"),
+            "uses the routes/ base: {}",
+            sp.path
+        );
+        assert!(
+            std::path::Path::new(&sp.path).exists(),
+            "{} exists",
+            sp.path
+        );
+    }
+
+    // local_file_path(seg 0, QCamera) matches the first drive_local_paths entry.
+    let one = core
+        .local_file_path(id, dk.clone(), 0, FileKind::QCamera)
+        .await
+        .unwrap();
+    assert_eq!(one.as_deref(), Some(paths[0].path.as_str()));
+
+    // A stream not in the previews-only selection (FCamera) → None (not mirrored).
+    assert!(core
+        .local_file_path(id, dk.clone(), 0, FileKind::FCamera)
+        .await
+        .unwrap()
+        .is_none());
+    // A non-existent segment → None.
+    assert!(core
+        .local_file_path(id, dk, 99, FileKind::QCamera)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 /// Missing device / drive surface as CoreError::NotFound across the facade.

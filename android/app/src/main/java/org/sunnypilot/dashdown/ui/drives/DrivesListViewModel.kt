@@ -11,6 +11,7 @@ import org.sunnypilot.dashdown.data.DashdownRepository
 import org.sunnypilot.dashdown.data.DriveProgress
 import org.sunnypilot.dashdown.data.UiError
 import uniffi.dashdown_core.Drive
+import uniffi.dashdown_core.FileKind
 
 data class DrivesUiState(
     val drives: List<Drive> = emptyList(),
@@ -26,6 +27,14 @@ class DrivesListViewModel(private val repo: DashdownRepository, private val devi
 
   /** Live download progress keyed by driveKey (drives the Downloading badge). */
   val progress: StateFlow<Map<String, DriveProgress>> = repo.progress
+
+  /**
+   * Per-drive thumbnail source: the first complete `qcamera.ts` path once resolved. A row
+   * (re)requests whenever its drive's sync state changes, so a freshly-downloaded drive gets a
+   * frame; an entry is stored only once a real path is found (absent = not resolvable yet).
+   */
+  private val _thumbnails = MutableStateFlow<Map<String, String?>>(emptyMap())
+  val thumbnails: StateFlow<Map<String, String?>> = _thumbnails.asStateFlow()
 
   init {
     // First visit: show the local mirror immediately, then auto-sync online if it's empty (a
@@ -72,6 +81,22 @@ class DrivesListViewModel(private val repo: DashdownRepository, private val devi
     viewModelScope.launch {
       runCatching { repo.setPreserved(deviceId, drive.driveKey, !drive.preserved) }
       loadOffline()
+    }
+  }
+
+  /** Resolve [drive]'s thumbnail source (called by its row on first composition + sync changes). */
+  fun requestThumbnail(drive: Drive) {
+    if (_thumbnails.value[drive.driveKey] != null) return // already have a frame source
+    viewModelScope.launch {
+      val path =
+          runCatching {
+                repo
+                    .driveLocalPaths(deviceId, drive.driveKey, FileKind.Q_CAMERA)
+                    .firstOrNull()
+                    ?.path
+              }
+              .getOrNull()
+      if (path != null) _thumbnails.update { it + (drive.driveKey to path) }
     }
   }
 }

@@ -2,6 +2,7 @@ package org.sunnypilot.dashdown.ui.drives
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import org.junit.Rule
@@ -44,20 +45,37 @@ class DrivesListScreenTest {
     rule.setContent {
       DashdownTheme {
         DrivesListScreen(
-            DrivesUiState(drives = drives, loading = false), emptyMap(), {}, {}, {}, {}, {}, {})
+            DrivesUiState(drives = drives, loading = false),
+            emptyMap(),
+            emptyMap(),
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+        )
       }
     }
     rule.onNodeWithTag("drive_row_000001a3--c20ba54385--0").assertExists()
     rule.onNodeWithText("Complete").assertIsDisplayed()
     rule.onNodeWithText("Partial").assertIsDisplayed()
     rule.onNodeWithText("Not downloaded").assertIsDisplayed()
+    // Every row carries a thumbnail slot (placeholder until a qcamera frame loads).
+    assert(
+        rule.onAllNodesWithTag("drive_thumb", useUnmergedTree = true).fetchSemanticsNodes().size ==
+            3) {
+          "expected one thumbnail slot per drive row"
+        }
   }
 
   @Test
   fun showsEmptyState() {
     rule.setContent {
       DashdownTheme {
-        DrivesListScreen(DrivesUiState(loading = false), emptyMap(), {}, {}, {}, {}, {}, {})
+        DrivesListScreen(
+            DrivesUiState(loading = false), emptyMap(), emptyMap(), {}, {}, {}, {}, {}, {}, {})
       }
     }
     rule.onNodeWithText("No drives yet", substring = true).assertExists()
