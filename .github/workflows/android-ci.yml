@@ -44,9 +44,9 @@ jobs:
       - name: local.properties
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
 
-      - name: Gradle assembleDebug + ktfmt check (:app + :core)
+      - name: Gradle assembleDebug + unit tests + ktfmt check (:app + :core)
         working-directory: android
-        run: ./gradlew :app:assembleDebug :core:assembleDebug ktfmtCheck --stacktrace
+        run: ./gradlew :app:assembleDebug :core:assembleDebug :app:testDebugUnitTest ktfmtCheck --stacktrace
 
       - name: Upload APK
         if: success() || failure()

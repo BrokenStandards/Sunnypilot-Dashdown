@@ -19,8 +19,8 @@ data class DriveDetailUiState(
     val status: DriveSyncStatus? = null,
     val loading: Boolean = true,
     val error: String? = null,
-    /** Absolute path to a downloaded, playable `qcamera.ts` in this drive, if any. */
-    val playablePath: String? = null,
+    /** Ordered absolute paths of every downloaded `qcamera.ts` — one continuous drive timeline. */
+    val playablePaths: List<String> = emptyList(),
 )
 
 class DriveDetailViewModel(
@@ -49,7 +49,7 @@ class DriveDetailViewModel(
               status = status,
               loading = false,
               error = null,
-              playablePath = resolvePlayable(),
+              playablePaths = resolvePlayables(),
           )
         }
       } catch (t: Throwable) {
@@ -67,12 +67,10 @@ class DriveDetailViewModel(
   }
 
   /**
-   * First complete `qcamera.ts` in this drive, resolved by the core (the single source of truth for
-   * on-disk paths — see `AppCore.driveLocalPaths`). Returns null if nothing is mirrored yet.
+   * Every downloaded `qcamera.ts` in this drive, ordered by segment — resolved by the core (the
+   * single source of truth for on-disk paths). The player treats them as one drive-wide timeline.
    */
-  private suspend fun resolvePlayable(): String? =
-      runCatching {
-            repo.driveLocalPaths(deviceId, driveKey, FileKind.Q_CAMERA).firstOrNull()?.path
-          }
-          .getOrNull()
+  private suspend fun resolvePlayables(): List<String> =
+      runCatching { repo.driveLocalPaths(deviceId, driveKey, FileKind.Q_CAMERA).map { it.path } }
+          .getOrElse { emptyList() }
 }
