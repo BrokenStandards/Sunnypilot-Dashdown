@@ -62,12 +62,18 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import org.sunnypilot.dashdown.data.DriveProgress
 import org.sunnypilot.dashdown.service.DownloadService
+import org.sunnypilot.dashdown.ui.components.PollWhileResumed
 import org.sunnypilot.dashdown.ui.rememberRepository
 import uniffi.dashdown_core.Drive
 import uniffi.dashdown_core.SyncStatus
 
 @Composable
-fun DrivesListRoute(deviceId: Long, onDriveClick: (String) -> Unit, onBack: () -> Unit) {
+fun DrivesListRoute(
+    deviceId: Long,
+    onDriveClick: (String) -> Unit,
+    onBack: () -> Unit,
+    drivesPollMs: Long = DrivesListViewModel.DRIVES_POLL_MS,
+) {
   val repo = rememberRepository()
   val vm: DrivesListViewModel =
       viewModel(factory = viewModelFactory { initializer { DrivesListViewModel(repo, deviceId) } })
@@ -80,6 +86,10 @@ fun DrivesListRoute(deviceId: Long, onDriveClick: (String) -> Unit, onBack: () -
     vm.loadOffline()
     onPauseOrDispose {}
   }
+  // While open, silently re-sync the drive list on an interval so new/removed drives appear on
+  // their
+  // own — no spinner flash, reachability-gated, never starts a download.
+  PollWhileResumed(drivesPollMs, key = deviceId) { vm.silentRefresh() }
   DrivesListScreen(
       state = state,
       progress = progress,
