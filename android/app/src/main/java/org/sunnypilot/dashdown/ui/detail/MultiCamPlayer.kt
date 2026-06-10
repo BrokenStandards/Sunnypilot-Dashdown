@@ -69,6 +69,13 @@ import uniffi.dashdown_core.FileKind
 private const val FILMSTRIP_TICKS = 12
 private const val TICK_MS = 120L
 
+// openpilot writes ~60 s segments. ExoPlayer reports a `.ts` window's duration
+// only once that segment buffers, so unbuffered windows read C.TIME_UNSET; we
+// fall back to this estimate so the scrubber spans ALL segments from the start
+// (it's replaced by the exact duration as each window prepares; HD MP4 windows
+// always report exact durations immediately).
+private const val DEFAULT_SEGMENT_MS = 60_000L
+
 /** A visible tile: either an HD camera or the qcamera fallback (when no HD is on). */
 private sealed interface Tile {
   data class Hd(val id: CameraId) : Tile
@@ -349,7 +356,7 @@ private fun windowsOf(player: ExoPlayer?): LongArray {
   val w = Timeline.Window()
   return LongArray(tl.windowCount) {
     val d = tl.getWindow(it, w).durationMs
-    if (d == C.TIME_UNSET) 0L else d
+    if (d == C.TIME_UNSET) DEFAULT_SEGMENT_MS else d
   }
 }
 
