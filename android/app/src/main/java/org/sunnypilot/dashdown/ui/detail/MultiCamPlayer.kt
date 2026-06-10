@@ -54,9 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
-import androidx.media3.common.Player
 import androidx.media3.common.Timeline
-import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.Renderer
@@ -172,18 +170,6 @@ fun MultiCamPlayer(
     positionMs = globalMs
   }
 
-  // qcamera audio-track presence gates the Audio toggle.
-  DisposableEffect(player) {
-    val l =
-        object : Player.Listener {
-          override fun onTracksChanged(tracks: Tracks) {
-            hasAudio = tracks.groups.any { it.type == C.TRACK_TYPE_AUDIO }
-          }
-        }
-    player.addListener(l)
-    onDispose { player.removeListener(l) }
-  }
-
   // React to the enabled set: on first run set up the qcamera-only playlist (instant timeline +
   // audio + preview), then remux & merge any newly-enabled HD cameras (rebuilding the playlist
   // while
@@ -229,6 +215,7 @@ fun MultiCamPlayer(
       val windows = windowsOf(player)
       totalMs = windows.sum()
       positionMs = globalPosition(windows, player.currentMediaItemIndex, player.currentPosition)
+      hasAudio = selector.sawAudio
       for (i in 0 until VIDEO_RENDERER_COUNT) ready[i] = factory.stats[i].firstFrameRendered
       delay(TICK_MS)
     }

@@ -39,6 +39,12 @@ public class TileMultiCamSelector extends TrackSelector {
   /** Per renderer index: whether that renderer's tile is currently shown (selected). */
   public volatile boolean[] visibleRenderers;
   public volatile boolean audioEnabled;
+  /**
+   * Set true once a qcamera audio group is seen during selection — the player exposes
+   * {@code Tracks.EMPTY} here (we build no {@code Tracks}), so the UI reads this flag instead of
+   * {@code getCurrentTracks()} to decide whether to offer the Audio toggle.
+   */
+  public volatile boolean sawAudio;
 
   public TileMultiCamSelector(
       List<List<VideoSlot>> windowLayouts, boolean[] visibleRenderers, boolean audioEnabled) {
@@ -87,6 +93,7 @@ public class TileMultiCamSelector extends TrackSelector {
         }
         videoGroup++;
       } else if (type == C.TRACK_TYPE_AUDIO) {
+        sawAudio = true;
         if (audioEnabled && audioRenderer >= 0) {
           configs[audioRenderer] = RendererConfiguration.DEFAULT;
           selections[audioRenderer] = new FixedTrackSelection(trackGroups.get(g), /* track= */ 0);
