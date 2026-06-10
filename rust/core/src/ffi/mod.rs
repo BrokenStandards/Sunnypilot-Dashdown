@@ -224,6 +224,14 @@ impl AppCore {
         self.engine.sync_now(&dev).await
     }
 
+    /// Connect to the device and return the detected copyparty hostname
+    /// (e.g. `comma-e0e384a`) for the UI to offer as the device's dongle id on
+    /// first add. `Ok(None)` = connected but no hostname; `Err` = unreachable.
+    pub async fn detect_device_name(&self, device_id: i64) -> Result<Option<String>> {
+        let dev = self.load_device(device_id).await?;
+        self.engine.detect_identity(&dev).await
+    }
+
     pub async fn set_preserved(
         &self,
         device_id: i64,

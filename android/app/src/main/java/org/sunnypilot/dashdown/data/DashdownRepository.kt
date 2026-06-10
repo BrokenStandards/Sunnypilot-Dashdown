@@ -73,6 +73,11 @@ class DashdownRepository(private val locator: ServiceLocator) {
 
   suspend fun syncNow(deviceId: Long): List<Drive> = io { locator.core.syncNow(deviceId) }
 
+  /** Connect and return the detected copyparty hostname (e.g. `comma-e0e384a`), or null. */
+  suspend fun detectDeviceName(deviceId: Long): String? = io {
+    locator.core.detectDeviceName(deviceId)
+  }
+
   suspend fun setPreserved(deviceId: Long, driveKey: String, preserved: Boolean) = io {
     locator.core.setPreserved(deviceId, driveKey, preserved)
   }

@@ -203,6 +203,18 @@ impl SyncEngine {
         self.reconcile(device_id, device.file_selection).await
     }
 
+    /// Connect to the device (resolving across its IPs and pinning identity) and
+    /// return the detected copyparty hostname (e.g. `comma-e0e384a`), if any. The
+    /// UI uses this to offer the auto-detected device id for confirmation when a
+    /// device is first added. `Ok(None)` means connected but no hostname was
+    /// readable; an `Err` means it couldn't be reached/verified.
+    pub async fn detect_identity(&self, device: &Device) -> Result<Option<String>> {
+        self.resolve(device).await?;
+        let id = device.id;
+        let pinned = db(self.repo.clone(), move |r| r.get_device_identity(id)).await?;
+        Ok(pinned.and_then(|i| i.hostname))
+    }
+
     /// Recompute every drive's `sync_state` from the local mirror and persist it;
     /// recover stale `running` jobs (a fresh process can't have a live download)
     /// to a terminal state. Offline-capable (index + disk, no network). Returns
