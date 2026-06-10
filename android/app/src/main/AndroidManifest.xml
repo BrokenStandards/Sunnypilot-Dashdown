@@ -30,6 +30,14 @@
             android:name=".service.DownloadService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- WorkManager promotes long-running workers (SyncSessionWorker) through its own
+             SystemForegroundService; merge the dataSync type onto the library's <service> so the
+             OS accepts setForeground(FOREGROUND_SERVICE_TYPE_DATA_SYNC) on API 34+. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
     </application>
 
 </manifest>
