@@ -8,7 +8,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -18,19 +17,13 @@ import uniffi.dashdown_core.SyncStatus
 
 /**
  * B2 live test for **"a segment added to an active drive gets synced"** — the background-sync core
- * the user asked for. Download the fixture's drive, inject a new segment on its route via the mock
- * control port (as the comma would by recording more footage), run another session, and confirm the
- * new segment is mirrored locally — all worker-driven, no UI.
+ * the user asked for. Stage a 2-segment drive on a **dedicated route**, download it, append a third
+ * segment via the mock control port (as the comma would by recording more footage), run another
+ * session, and confirm the appended segment is mirrored — all worker-driven, no UI. The dedicated
+ * route is removed in `finally` so the shared fixture stays pristine for the other live tests.
  *
- * Skipped unless both `mockPort` and `controlPort` are supplied. Run locally (host):
- * ```
- * cargo run -q -p mock-copyparty -- --fixture single_drive --port 8099 --control-port 8098 &
- * adb reverse tcp:8099 tcp:8099 && adb reverse tcp:8098 tcp:8098
- * ./gradlew -p android :app:connectedDebugAndroidTest \
- *   -Pandroid.testInstrumentationRunnerArguments.class=org.sunnypilot.dashdown.SyncSessionSegmentPickupTest \
- *   -Pandroid.testInstrumentationRunnerArguments.mockPort=8099 \
- *   -Pandroid.testInstrumentationRunnerArguments.controlPort=8098
- * ```
+ * Skipped unless both `mockPort` and `controlPort` are supplied (see [tools/run-android-e2e.sh] /
+ * docs/TESTING.md for the runbook).
  */
 @RunWith(AndroidJUnit4::class)
 class SyncSessionSegmentPickupTest {
@@ -48,24 +41,36 @@ class SyncSessionSegmentPickupTest {
     assumeTrue(
         "requires mockPort + controlPort + fixture + adb reverse",
         port != null && controlPort != null)
+    val cp = controlPort!!.toInt()
+    val route = "000009ee--segpickup01" // dedicated route, isolated from the single_drive fixture
     val device = repo.addDevice(autoSyncDevice("SegPickup-${System.nanoTime()}", port!!))
     try {
-      // First session: the fixture's initial drive downloads to COMPLETE.
+      // Stage a 2-segment drive on its own route and download everything.
+      withContext(Dispatchers.IO) {
+        MockControl.post(cp, "/add_drive", "{\"route\":\"$route\",\"segs\":2}")
+      }
       TestListenableWorkerBuilder<SyncSessionWorker>(app).build().doWork()
-      val key = repo.listDrives(device.id, offline = true).first().driveKey
+      val key =
+          repo
+              .listDrives(device.id, offline = true)
+              .first { it.driveKey.startsWith(route) }
+              .driveKey
       assertEquals(SyncStatus.COMPLETE, repo.getDriveStatus(device.id, key).status)
       val before = repo.driveLocalPaths(device.id, key, FileKind.Q_CAMERA).size
-      assertTrue("fixture drive should have segments", before > 0)
 
-      // The comma records another segment on the same route, then a fresh session runs.
-      withContext(Dispatchers.IO) { MockControl.post(controlPort!!.toInt(), "/add_segment", "{}") }
+      // The comma records another segment on that drive; a fresh session must pick it up.
+      withContext(Dispatchers.IO) {
+        MockControl.post(cp, "/add_segment", "{\"route\":\"$route\",\"n\":1}")
+      }
       TestListenableWorkerBuilder<SyncSessionWorker>(app).build().doWork()
 
-      // The new segment must now be mirrored, and the drive still COMPLETE.
       val after = repo.driveLocalPaths(device.id, key, FileKind.Q_CAMERA).size
-      assertEquals("the added segment should have been synced", before + 1, after)
+      assertEquals("the appended segment should have been synced", before + 1, after)
       assertEquals(SyncStatus.COMPLETE, repo.getDriveStatus(device.id, key).status)
     } finally {
+      withContext(Dispatchers.IO) {
+        runCatching { MockControl.post(cp, "/remove_drive", "{\"route\":\"$route\"}") }
+      }
       repo.removeDevice(device.id)
     }
   }

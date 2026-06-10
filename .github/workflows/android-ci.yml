@@ -93,17 +93,18 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Run :core + :app connected tests on emulator
+      - name: Run :core + :app connected tests on emulator (with mock fixture)
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
           target: aosp_atd
           arch: x86_64
-          working-directory: android
-          # :app live tests (DrivesSync/DownloadService/DriveExport/AutoSyncWorker/
-          # Connectivity.reachable) self-skip without a `mockPort` arg, so only the
-          # hermetic UI + core tests run here. unreachableDeviceShowsRed runs (no server needed).
-          script: ./gradlew :core:connectedDebugAndroidTest :app:connectedDebugAndroidTest --stacktrace
+          # tools/run-android-e2e.sh builds + starts mock-copyparty (data + control port), sets up
+          # adb reverse, and runs the connected tests with mockPort/controlPort so the live and
+          # background-sync tests actually execute. The two media-decode tests
+          # (DeviceRemuxDecode / MultiCamHevcPlayback) self-skip on the AOSP emulator (no HEVC
+          # decoder / staged MP4). Runs from the repo root so cargo + the gradle wrapper resolve.
+          script: tools/run-android-e2e.sh
 
       - name: Upload test reports
         if: success() || failure()
