@@ -1,0 +1,11 @@
+# Remove one device by NAME (taps the overflow on that row → Remove).
+appId: org.sunnypilot.dashdown
+env:
+  NAME: escape2020
+---
+- launchApp
+- tapOn:
+    text: "More"
+    rightOf:
+      text: "${NAME}"
+- tapOn: "Remove"

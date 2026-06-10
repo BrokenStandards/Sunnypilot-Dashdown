@@ -1,0 +1,10 @@
+# Remove ALL devices: tap each row's overflow → Remove until none remain.
+appId: org.sunnypilot.dashdown
+---
+- launchApp
+- repeat:
+    while:
+      visible: "More"
+    commands:
+      - tapOn: "More"
+      - tapOn: "Remove"

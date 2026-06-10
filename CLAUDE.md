@@ -54,6 +54,18 @@ code stay clean.
 - **Phase B:** `mobile-mcp` (Android UI automation), and a `mock-comma-mcp` wrapper around the
   `mock-copyparty` fixture for hermetic, state-injecting UI tests.
 
+## Device test tooling (real hardware)
+
+One-command helpers for common on-device tasks (instead of many UI taps / adb calls):
+
+- **`tools/dd-db.sh [devices|identity|drives|segments|schema|"<SQL>"]`** — pull the live
+  on-device `index.sqlite` (+WAL) and print a query result.
+- **`tools/dd-ui.sh <flow> [KEY=VAL …]`** — run a parameterized Maestro flow under
+  `android/maestro/` (`add_device`, `remove_device`, `clear_devices`); sets JDK 17 (Maestro needs 17+).
+  E.g. `tools/dd-ui.sh add_device NAME=escape2020 IP=192.168.1.100`.
+- After a flow, dump the screen **once** via mobile-mcp `list-elements` to read the end state and
+  find new buttons — rather than many list calls mid-flow.
+
 ## Don't commit
 
 `ref/`, `target/`, generated bindings, `.env`/secrets, Android/iOS build outputs (see `.gitignore`).

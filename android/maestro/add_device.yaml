@@ -1,0 +1,42 @@
+# Add a device through the UI. Override args with -e (see tools/dd-ui.sh):
+#   NAME     device name
+#   IP       primary IP (goes in the "Hotspot IP" field)
+#   PORT     copyparty port (default 8080)
+#   WIFI_IP  optional second IP (the "Home/Wi-Fi IP" field) for multi-IP testing
+# Leaves the Dongle ID blank so first-connect detection runs, then auto-confirms
+# the detected id if the dialog appears (a no-op when the device is unreachable).
+appId: org.sunnypilot.dashdown
+env:
+  NAME: escape2020
+  IP: 192.168.1.100
+  PORT: "8080"
+  WIFI_IP: ""
+---
+- launchApp
+- tapOn:
+    id: "add_device_fab"
+- tapOn:
+    id: "device_form_name"
+- inputText: "${NAME}"
+- tapOn:
+    id: "device_form_hotspot_ip"
+- eraseText
+- inputText: "${IP}"
+- runFlow:
+    when:
+      true: ${WIFI_IP != ''}
+    commands:
+      - tapOn:
+          id: "device_form_wifi_ip"
+      - inputText: "${WIFI_IP}"
+- tapOn:
+    id: "device_form_port"
+- eraseText
+- inputText: "${PORT}"
+- hideKeyboard
+- tapOn:
+    id: "device_form_save"
+# Detected-dongle confirm dialog (only when reachable + Dongle ID left blank).
+- tapOn:
+    text: "Use it"
+    optional: true
