@@ -217,26 +217,53 @@ fun MultiCamPlayer(
   // Keep qcamera muted/unmuted per the toggle.
   LaunchedEffect(audioOn, qPlayer) { qPlayer?.volume = if (audioOn) 1f else 0f }
 
-  // Populate each enabled HD camera's playlist (lazy remux), then align it to the
-  // current position + play state. Clearing on disable stops its decoder.
+  // Populate each enabled HD camera's playlist by remuxing its segments to MP4.
+  // Progressive: prepare the first segment as soon as it's ready (so a frame shows
+  // and the spinner clears in ~1 s), then stream in the rest — rather than waiting
+  // for the whole drive to remux before showing anything. The fully-resolved path
+  // list is cached so re-enabling the camera is instant; after the playlist is
+  // complete we align it to the master's current position.
   hdCameras.forEach { track ->
     key(track.id) {
       val on = track.id in enabled
       LaunchedEffect(track.id, on) {
         if (!on) return@LaunchedEffect
         val player = hdPlayers[track.id] ?: return@LaunchedEffect
-        val paths =
-            resolvedHd[track.id]
-                ?: track.segmentNums
-                    .mapNotNull { resolveHd(track.id.kind, it) }
-                    .also { resolvedHd[track.id] = it }
-        if (player.mediaItemCount == 0 && paths.isNotEmpty()) {
-          player.setMediaItems(paths.map { MediaItem.fromUri(Uri.fromFile(File(it))) })
-          player.prepare()
+        if (player.mediaItemCount > 0) return@LaunchedEffect // already populated
+        fun mediaItem(path: String) = MediaItem.fromUri(Uri.fromFile(File(path)))
+        fun alignToMaster() {
           val (idx, off) = locate(windowsOf(timelineSource), positionMs)
-          player.seekTo(idx.coerceIn(0, (paths.size - 1)), off)
+          player.seekTo(idx.coerceIn(0, (player.mediaItemCount - 1).coerceAtLeast(0)), off)
           player.playWhenReady = playing
         }
+
+        val cached = resolvedHd[track.id]
+        if (cached != null) {
+          if (cached.isNotEmpty()) {
+            player.setMediaItems(cached.map(::mediaItem))
+            player.prepare()
+            alignToMaster()
+          }
+          return@LaunchedEffect
+        }
+
+        // Fresh load: start clean (a prior load may have been cancelled mid-stream),
+        // add the first remuxed segment immediately, then append the rest.
+        player.clearMediaItems()
+        val resolved = mutableListOf<String>()
+        for (seg in track.segmentNums) {
+          val path = resolveHd(track.id.kind, seg) ?: continue
+          resolved.add(path)
+          if (player.mediaItemCount == 0) {
+            player.setMediaItem(mediaItem(path))
+            player.prepare()
+            player.playWhenReady = playing
+          } else {
+            player.addMediaItem(mediaItem(path))
+          }
+        }
+        resolvedHd[track.id] = resolved
+        alignToMaster() // full playlist loaded → jump to the master's position
       }
       DisposableEffect(track.id) { onDispose { hdPlayers[track.id]?.clearMediaItems() } }
     }
