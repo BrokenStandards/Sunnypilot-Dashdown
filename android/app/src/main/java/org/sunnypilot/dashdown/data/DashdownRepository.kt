@@ -91,6 +91,18 @@ class DashdownRepository(private val locator: ServiceLocator) {
         locator.core.driveLocalPaths(deviceId, driveKey, kind)
       }
 
+  /**
+   * Path to a player-openable file for this segment's [kind] stream, remuxing the raw HEVC HD
+   * cameras to MP4 on first use (qcamera/others return their source path). Null if not mirrored.
+   * The remux is CPU/IO-heavy; it runs on the core's blocking pool.
+   */
+  suspend fun ensurePlayable(
+      deviceId: Long,
+      driveKey: String,
+      segmentNum: UInt,
+      kind: FileKind,
+  ): String? = io { locator.core.ensurePlayable(deviceId, driveKey, segmentNum, kind) }
+
   // --- Downloads / maintenance / connectivity ---
   suspend fun startDriveDownload(deviceId: Long, driveKey: String): SyncHandle = io {
     locator.core.startDriveDownload(deviceId, driveKey)

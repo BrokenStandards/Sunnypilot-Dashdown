@@ -99,26 +99,36 @@ segment's qcamera actually has an audio track (detect via Media3 `Tracks`).
 - **Tests:** instrumented scrub (seek lands within 1 frame), filmstrip count + cache hit, audio
   toggle hidden when no track. Manual on Pixel.
 
-### RP3 — Multi-camera HD: lazy remux + tiling + same-frame switching
-- **Rust** new module `rust/core/src/video/{mod.rs,remux.rs}`: raw HEVC Annex-B → fragmented MP4
-  (`-c copy`, `hvc1`), VPS/SPS/PPS parse, 20 fps timing, `moov/moof/mdat` writer. Use a pure-Rust
-  mp4 muxer crate (evaluate `mp4`/`re-mp4` for `hvc1`; else a small hand-rolled box writer) — **no
-  ffmpeg/C**. Cache `<file>.hevc.mp4`. FFI:
-  ```
-  async fn ensure_playable(&self, device_id: i64, drive_key: String,
-                          segment_num: u32, kind: FileKind) -> Result<Option<String>>
-  // qcamera → its path as-is; HD camera → cached/created fMP4 path (remux on the tokio runtime)
-  ```
-  Maintenance (`run_maintenance`) deletes derived `.mp4` when pruning.
-- **Android** new `ui/detail/{MultiCamPlayer.kt, RouteClock.kt}`: one ExoPlayer per enabled tile,
-  master clock + sync controller (above), tap-toggle bar for **road / wide / driver**, and a pure
-  `tilesFor(enabled, orientation): List<TileSlot>` layout function rendered via `BoxWithConstraints`.
-  Tiling: **N=1** full; **N=2** stacked (portrait) / side-by-side (landscape); **N=3** primary-large
-  (road) + two stacked thumbnails; **N=4** 2×2.
-- **Tests:** Rust remux unit (HEVC fixture → valid fMP4; `sample_count == frame_count`). Media3
-  instrumented: the fMP4 plays + seeks; cross-camera switch lands the same frame (±1). `tilesFor`
-  snapshot tests N=1..4 × orientations. Manual on Pixel + the real comma-4 @ `192.168.1.181:8080`
-  with a real HD drive (watch thermals/battery — consider capping simultaneous HD decoders).
+### RP3 — Multi-camera HD: lazy remux + tiling + same-frame switching — 🚧 code complete, on-device check pending
+- **Rust** new module [`rust/core/src/video/{mod.rs,remux.rs}`](../../rust/core/src/video/): raw HEVC
+  Annex-B → MP4 with an `hvc1` sample entry, VPS/SPS/PPS → `hvcC`, 20 fps timing, full `stbl`
+  (`stts`/`stss`/`stsc`/`stsz`/`co64`) → frame-accurate seek. **Decisions (changed from sketch):**
+  - **Hand-rolled box writer, no crate.** The `mp4` crate (0.14) exposes only `width`/`height` on
+    `HevcConfig` and writes an **empty** `hvcC` → unplayable; injecting VPS/SPS/PPS needs a fork.
+  - **Plain progressive MP4, not fragmented.** The whole input is known up front and the output is
+    cached, so one `moov` is simpler and equally seekable; fMP4 only helps live muxing. **No C deps.**
+  - **Multi-slice grouping (found by the de-risk):** the comma encoder emits **2 slices per
+    picture**; group VCL NALs into one sample by `first_slice_segment_in_pic_flag` or the decoder
+    drops the continuation slices (`nb_frames` doubled, duration 2×). Assumes no B-frames (comma low-
+    latency encode → monotonic order → no `ctts`).
+  - FFI `ensure_playable(device_id, drive_key, segment_num, kind) -> Option<String>`: qcamera/others
+    return their source path; HD cameras return a cached/created `<file>.hevc.mp4` (remux on the
+    blocking pool). **Maintenance: no new code** — derived `.mp4` lives in the segment dir, which
+    `enforce_retention` already removes wholesale (`remove_dir`).
+- **Android** [`ui/detail/{MultiCamPlayer.kt, RouteClock.kt}`](../../android/app/src/main/java/org/sunnypilot/dashdown/ui/detail/):
+  qcamera is the clock/audio/filmstrip master; each enabled HD camera is its own ExoPlayer (playlist
+  over the drive's segments, lazily remuxed) kept frame-synced (`shouldResync` past ~1 frame). Pure
+  `tilePlan(n, landscape): TilePlan` layout. Tiling: **N=1** full; **N=2** stacked/side-by-side;
+  **N=3** primary-large + two; **N=4** 2×2. Tap-toggle bar for **road / wide / driver**; audio gated
+  on a real qcamera track.
+- **Tests:** Rust remux unit ×10 (synthetic NAL streams: SPS parse, multi-slice grouping, sync
+  table, structure) ✅. JVM `RouteClockTest` (tilePlan × orientation, resync) + `RouteTimelineTest` ✅.
+  Gated instrumented `MultiCamHevcPlaybackLiveTest` (downloads a real road-camera segment, remuxes,
+  decodes t=0 + mid-segment via `MediaMetadataRetriever`) — **runs on device, pending Pixel/comma
+  reachability**.
+- **De-risk done (host):** a real 60 s `fcamera.hevc` round-trips to a 1344×760 @ 20 fps, 1200-frame
+  MP4 that a conformant decoder (libavcodec) plays and **seeks** with **zero warnings** — strong
+  evidence the platform decoder will too. On-device visual confirmation is the one remaining step.
 
 ---
 

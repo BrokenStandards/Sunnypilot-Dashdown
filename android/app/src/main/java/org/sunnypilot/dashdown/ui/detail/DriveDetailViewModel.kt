@@ -21,6 +21,8 @@ data class DriveDetailUiState(
     val error: String? = null,
     /** Ordered absolute paths of every downloaded `qcamera.ts` — one continuous drive timeline. */
     val playablePaths: List<String> = emptyList(),
+    /** HD cameras (road/wide/driver) that have downloaded segments — the toggle bar. */
+    val hdCameras: List<CameraTrack> = emptyList(),
 )
 
 class DriveDetailViewModel(
@@ -50,6 +52,7 @@ class DriveDetailViewModel(
               loading = false,
               error = null,
               playablePaths = resolvePlayables(),
+              hdCameras = resolveHdCameras(),
           )
         }
       } catch (t: Throwable) {
@@ -73,4 +76,21 @@ class DriveDetailViewModel(
   private suspend fun resolvePlayables(): List<String> =
       runCatching { repo.driveLocalPaths(deviceId, driveKey, FileKind.Q_CAMERA).map { it.path } }
           .getOrElse { emptyList() }
+
+  /**
+   * The HD cameras (road/wide/driver) that have downloaded segments, with their segment numbers —
+   * cheap (mirror checks only). The player remuxes them to MP4 lazily via [ensurePlayable] when a
+   * camera is toggled on.
+   */
+  private suspend fun resolveHdCameras(): List<CameraTrack> =
+      CameraId.entries.mapNotNull { id ->
+        val segs =
+            runCatching { repo.driveLocalPaths(deviceId, driveKey, id.kind).map { it.segmentNum } }
+                .getOrElse { emptyList() }
+        if (segs.isEmpty()) null else CameraTrack(id, segs)
+      }
+
+  /** Lazy HEVC→MP4 remux for one HD segment, delegated to the core (cached). */
+  suspend fun ensurePlayable(kind: FileKind, segmentNum: UInt): String? =
+      runCatching { repo.ensurePlayable(deviceId, driveKey, segmentNum, kind) }.getOrNull()
 }

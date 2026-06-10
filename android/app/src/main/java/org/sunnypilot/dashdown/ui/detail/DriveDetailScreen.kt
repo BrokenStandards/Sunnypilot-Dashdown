@@ -49,6 +49,7 @@ import org.sunnypilot.dashdown.data.DashdownRepository
 import org.sunnypilot.dashdown.data.DriveProgress
 import org.sunnypilot.dashdown.service.DownloadService
 import org.sunnypilot.dashdown.ui.rememberRepository
+import uniffi.dashdown_core.FileKind
 import uniffi.dashdown_core.Segment
 import uniffi.dashdown_core.SyncStatus
 
@@ -90,6 +91,7 @@ fun DriveDetailRoute(deviceId: Long, driveKey: String, onBack: () -> Unit) {
       onDownload = { DownloadService.start(context, deviceId, driveKey) },
       onCancel = { DownloadService.cancel(context, driveKey) },
       onExport = { exportLauncher.launch("${state.drive?.routeId ?: "drive"}.zip") },
+      resolveHd = vm::ensurePlayable,
   )
 }
 
@@ -102,6 +104,7 @@ fun DriveDetailScreen(
     onDownload: () -> Unit,
     onCancel: () -> Unit,
     onExport: () -> Unit,
+    resolveHd: suspend (FileKind, UInt) -> String? = { _, _ -> null },
 ) {
   val drive = state.drive
   val downloading = live != null && live.terminal == null
@@ -159,8 +162,13 @@ fun DriveDetailScreen(
                   )
                 }
 
-                if (state.playablePaths.isNotEmpty()) {
-                  DrivePlayer(state.playablePaths, Modifier.fillMaxWidth())
+                if (state.playablePaths.isNotEmpty() || state.hdCameras.isNotEmpty()) {
+                  MultiCamPlayer(
+                      qcameraPaths = state.playablePaths,
+                      hdCameras = state.hdCameras,
+                      resolveHd = resolveHd,
+                      modifier = Modifier.fillMaxWidth(),
+                  )
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
