@@ -129,14 +129,49 @@ Merge only when drop counters are flat, all 6 hard cases pass, and recorded vide
 
 | # | Risk / open question | Smallest experiment |
 |---|---|---|
-| **A0** | Does single-player/N-renderer actually frame-**lock** video, and does disabling a renderer's track **free its decoder** (not just blank the surface)? | **Go/no-go spike:** throwaway app, `MultiRenderersFactory` + `TileTrackSelector` + `MergingMediaSource`, 2 cached HD MP4s + qcamera audio, 2 SurfaceViews on the Pixel. Measure per-renderer `DecoderCounters` (flat?), pause-and-capture (same frame ≤1?), toggle a tile (decoder count drops?). |
-| **R1** | `MergingMediaSource` equal-period-count requirement vs lazily/progressively grown HD playlists. | Merge a 16-segment qcamera with a 3-segment-so-far HD source via padding/placeholder periods; confirm no `IllegalMergeException` and that appending real segments doesn't re-throw. |
+| **A0** ✅ **PASS** | Does single-player/N-renderer actually frame-**lock** video, and does disabling a renderer's track **free its decoder**? | **DONE on the Pixel** (commit `800f559`, debug-only `app/src/debug/.../spike/`). Results in §7. |
+| **R1** ⬅ next gate | `MergingMediaSource` equal-period-count requirement vs lazily/progressively grown multi-segment HD playlists. **A0 used single segments, so this is still UNPROVEN.** | Merge each camera's *concatenated* segments (`ConcatenatingMediaSource2` per camera, then `MergingMediaSource`), play across segment boundaries; test ragged counts (qcamera 16, HD 3-so-far) and confirm no `IllegalMergeException` + smooth boundary crossings. |
 | **R2** | Global stall (one renderer rebuffers → all pause) vs "show tile 1 fast, stream the rest" UX. | Delay one HD source in the instrumented test; decide readiness policy (don't enable a tile's track until its segments buffer). |
 | **R3** | Concurrent HEVC decoder ceiling for GRID4 (4 tiles + audio) on real/low-end devices. | `getMaxSupportedInstances()` on Pixel + a mid-range device; attempt 4 simultaneous HEVC decoders; cap/degrade if it fails. |
 | **R4** | Per-tile Surface recreation in Compose (rotation/recomposition) → stuck/black tile. | Rotate repeatedly during the spike; confirm `MSG_SET_VIDEO_OUTPUT` re-send restores the tile. |
 | **R5** | Custom multi-renderer path historically breaks on media3 bumps. | Pin `media3 = 1.10.1`; add the instrumented multi-renderer test to CI as a regression gate before any media3 bump. |
 | **R6** | If A0 fails, does B meet "exact same-frame at toggle"? | Prototype B's controller; confirm a one-shot exact seek at the toggle moment lands same-frame, then PLL holds smoothly. |
 
-**Bottom line:** build **A** behind a flag, **gated on Spike A0**. A0 passes →
-finish the staged migration, delete chase-sync. A0 disappoints → ship **B**. D and E
-are verified-unusable today and explicitly off the build path.
+---
+
+## 7. Spike A0 results — **PASS** (2026-06-10, Pixel 10 Pro XL, commit `800f559`)
+
+Throwaway debug-only harness (`app/src/debug/.../spike/`): one `ExoPlayer`,
+`MultiRenderersFactory` (N video renderers), a custom `TileTrackSelector`, a
+`MergingMediaSource`, per-tile `SurfaceView`s, per-renderer `DecoderCounters`. Ran
+against the real cached HD MP4s of drive `00000043--050c69d7d8` seg 0.
+
+**Key correction to the plan — `MappingTrackSelector` does NOT work for this.**
+In media3 1.10.1 (confirmed in source) `MappingTrackSelector.findRenderer` sets
+`preferUnassociatedRenderer = (group.type == C.TRACK_TYPE_METADATA)` — hardcoded,
+**no setter**. So for *video* it never spreads: all video groups map to renderer 0
+and every other video renderer stays decoder-less (observed: tile 1 black, one
+decoder). **Fix (validated):** extend `TrackSelector` **directly** and assign the
+k-th merged video group → the k-th video renderer positionally, returning a
+hand-built `TrackSelectorResult(configs, selections, Tracks.EMPTY, null)`. This is
+the production pattern for Commit 2 — *not* `MappingTrackSelector`.
+
+**Measured outcomes (all green):**
+- **Multi-video frame-lock:** 2 HEVC tiles, one clock — `r0`/`r1` `rendered=1200/1200`, `dropped=0/0`, in lockstep the whole 60s segment (≈20 fps). Two independent HW decoders, never seeked.
+- **Frame-lock visual:** paused → both tiles on the same instant (road + wide of the same night scene).
+- **Decoder release on toggle:** tile off → its HW codec releases (`GC2_Dec onRelease`), counters go null; back on → decoder recreated, renders to its pre-attached surface. So GRID4 won't pin codecs for hidden cameras, and same-frame toggle = track reselect (no seek).
+- **Audio + 2 video together (the old failure mode):** qcamera AAC on the audio renderer + 2 HEVC tiles — steady-state `dropped=0` on both tiles, **zero audio underruns**. Only cost: a one-time ~0.9 s (~18-frame) startup catch-up when the audio clock engages (mitigate by buffering before play; otherwise an imperceptible initial settle).
+- **Surface routing:** attaching a `Surface` to a renderer *before* it has a selected track is a safe no-op; the decoder initializes to the stored surface on selection. Per-renderer `MSG_SET_VIDEO_OUTPUT` routing works; do **not** call `player.setVideoSurface` (broadcasts to all).
+
+**What A0 did NOT cover (next gates before/within the rewrite):** R1 (multi-segment
+merge — A0 used single segments), R3 (4 simultaneous HEVC decoders for GRID4), R4
+(Compose surface recreation on rotation). R1 is the immediate next experiment.
+
+---
+
+**Bottom line:** A0 **passed decisively** — the core single-player/N-renderer
+mechanism frame-locks video + audio with zero steady-state drops, and the one big
+unknown (track routing) is solved with a **direct `TrackSelector`**. Proceed with
+**A**: next de-risk **R1** (multi-segment merge), then the staged migration behind a
+flag, then delete chase-sync. Fallback **B** stays in reserve only if R1/R3 surprise
+us. D and E remain verified-unusable and off the build path.
