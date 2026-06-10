@@ -143,6 +143,11 @@ fun MultiCamPlayer(
   var playing by remember(qcameraPaths, hdCameras) { mutableStateOf(false) }
   var audioOn by remember(qcameraPaths, hdCameras) { mutableStateOf(false) }
   var hasAudio by remember(qPlayer) { mutableStateOf(false) }
+  // Per-HD-camera readiness — true once the player has rendered its first frame.
+  // The tile's "Preparing HD…" overlay reads this (Compose) state instead of the
+  // player's `mediaItemCount`, which isn't observable and so never recomposed the
+  // tile when the lazy remux finished (the spinner stuck until an unrelated toggle).
+  val ready = remember(hdCameras) { mutableStateMapOf<CameraId, Boolean>() }
 
   // Visible tiles: enabled HD cameras (stable enum order), or qcamera if none on.
   val visible: List<Tile> =
@@ -191,6 +196,22 @@ fun MultiCamPlayer(
         }
     p.addListener(l)
     onDispose { p.removeListener(l) }
+  }
+
+  // Clear each HD tile's "Preparing HD…" overlay the moment it renders a frame.
+  DisposableEffect(hdPlayers) {
+    val attached =
+        hdPlayers.map { (id, player) ->
+          val l =
+              object : Player.Listener {
+                override fun onRenderedFirstFrame() {
+                  ready[id] = true
+                }
+              }
+          player.addListener(l)
+          Triple(id, player, l)
+        }
+    onDispose { attached.forEach { (_, player, l) -> player.removeListener(l) } }
   }
 
   // Keep qcamera muted/unmuted per the toggle.
@@ -259,7 +280,12 @@ fun MultiCamPlayer(
         plan = tilePlan(visible.size, landscape),
         modifier = Modifier.fillMaxWidth().testTag("drive_detail_player"),
     ) { tile ->
-      CameraTile(tile = tile, player = playerFor(tile))
+      CameraTile(
+          tile = tile,
+          player = playerFor(tile),
+          // qcamera is prepared up front; HD tiles wait for their first rendered frame.
+          ready = if (tile is Tile.Hd) ready[tile.id] == true else true,
+      )
     }
 
     // Camera toggle bar (only the HD cameras that were downloaded for this drive).
@@ -362,13 +388,17 @@ private fun windowsOf(player: ExoPlayer?): LongArray {
 
 /** A single camera surface with a label and a "preparing" spinner until ready. */
 @Composable
-private fun CameraTile(tile: Tile, player: ExoPlayer?, modifier: Modifier = Modifier) {
+private fun CameraTile(
+    tile: Tile,
+    player: ExoPlayer?,
+    ready: Boolean,
+    modifier: Modifier = Modifier,
+) {
   val label =
       when (tile) {
         is Tile.Hd -> tile.id.label
         Tile.Qcam -> "Preview"
       }
-  val ready = (player?.mediaItemCount ?: 0) > 0
   Box(
       modifier
           .fillMaxWidth()
