@@ -92,6 +92,8 @@ impl RunningDevice {
             "port": self.port,
             "base_url": self.base_url(),
             "reachable": self.server.is_some(),
+            "routes": serde_json::to_value(mock_copyparty::mutate::list_routes(self.temp.path()))
+                .unwrap_or_default(),
         })
     }
 }
@@ -133,6 +135,31 @@ pub struct SetReachableParams {
 pub struct DeviceQuery {
     /// Limit to one device; omit to act on all.
     pub device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AddSegmentParams {
+    pub device_id: String,
+    /// Route to grow; omit for the device's primary (lexically-first) route.
+    pub route: Option<String>,
+    /// How many consecutive segments to append (default 1).
+    pub n: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AddDriveParams {
+    pub device_id: String,
+    /// New route id (e.g. `000009ff--newdrive00`).
+    pub route: String,
+    /// How many segments the new drive starts with (default 1).
+    pub segs: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RemoveDriveParams {
+    pub device_id: String,
+    /// Route id whose segments are deleted.
+    pub route: String,
 }
 
 fn not_found(id: &str) -> ErrorData {
@@ -223,7 +250,54 @@ impl MockComma {
     }
 
     #[tool(
-        description = "Snapshot one or all provisioned devices (id, base_url, port, reachable)."
+        description = "Append N consecutive segments (default 1) to a route (default: the device's primary route), modelling a recording that grows while you watch. Served live on the same port — no rebind. Returns the device info incl. updated route segment counts."
+    )]
+    async fn add_segment(
+        &self,
+        Parameters(p): Parameters<AddSegmentParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let devices = self.devices.lock().await;
+        let dev = devices
+            .get(&p.device_id)
+            .ok_or_else(|| not_found(&p.device_id))?;
+        mock_copyparty::mutate::add_segment(dev.temp.path(), p.route.as_deref(), p.n.unwrap_or(1))
+            .map_err(io_err)?;
+        ok(dev.info(&p.device_id))
+    }
+
+    #[tool(
+        description = "Create a brand-new drive (route) with `segs` full segments (default 1) on a provisioned device. Served live; no rebind."
+    )]
+    async fn add_drive(
+        &self,
+        Parameters(p): Parameters<AddDriveParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let devices = self.devices.lock().await;
+        let dev = devices
+            .get(&p.device_id)
+            .ok_or_else(|| not_found(&p.device_id))?;
+        mock_copyparty::mutate::add_drive(dev.temp.path(), &p.route, p.segs.unwrap_or(1))
+            .map_err(io_err)?;
+        ok(dev.info(&p.device_id))
+    }
+
+    #[tool(
+        description = "Delete a route's segments from a provisioned device (models the Comma's own low-space auto-prune of old drives). Served live; no rebind."
+    )]
+    async fn remove_drive(
+        &self,
+        Parameters(p): Parameters<RemoveDriveParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let devices = self.devices.lock().await;
+        let dev = devices
+            .get(&p.device_id)
+            .ok_or_else(|| not_found(&p.device_id))?;
+        mock_copyparty::mutate::remove_drive(dev.temp.path(), &p.route).map_err(io_err)?;
+        ok(dev.info(&p.device_id))
+    }
+
+    #[tool(
+        description = "Snapshot one or all provisioned devices (id, base_url, port, reachable, routes)."
     )]
     async fn status(
         &self,

@@ -62,6 +62,60 @@ async fn gap_index_groups_into_two_drives() {
     assert_eq!(drives.len(), 2, "index gap 0,1,3 → two drives");
 }
 
+/// Appending a segment to a served route shows up on the very next listing —
+/// no restart — because the listing handler walks disk per request. This is the
+/// mechanism Phase B's "segment added to an active drive → synced" relies on.
+#[tokio::test(flavor = "multi_thread")]
+async fn add_segment_grows_drive_live() {
+    let fx = fixtures::single_drive(); // one route, segments 0,1,2
+    let root = fx.dir.path().to_path_buf(); // TempDir is moved into the server but the path stays
+    let srv = MockServer::spawn(fx, None).await.unwrap();
+    let client = CopypartyClient::new(srv.base_url(), Credentials::Anonymous).unwrap();
+
+    let before = group_segments(client.list_segments("routes/").await.unwrap());
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0].segment_count, 3);
+
+    mock_copyparty::mutate::add_segment(&root, None, 1).unwrap();
+
+    let after = group_segments(client.list_segments("routes/").await.unwrap());
+    assert_eq!(after.len(), 1, "still one drive (same route)");
+    assert_eq!(
+        after[0].segment_count, 4,
+        "the appended segment is served live"
+    );
+}
+
+/// Adding and removing a whole route (drive) is reflected live in the grouping —
+/// the basis for Phase C's "drive list updates on add/remove without manual
+/// refresh" and the Comma's own low-space auto-prune.
+#[tokio::test(flavor = "multi_thread")]
+async fn add_and_remove_drive_live() {
+    let fx = fixtures::single_drive();
+    let root = fx.dir.path().to_path_buf();
+    let srv = MockServer::spawn(fx, None).await.unwrap();
+    let client = CopypartyClient::new(srv.base_url(), Credentials::Anonymous).unwrap();
+
+    assert_eq!(
+        group_segments(client.list_segments("routes/").await.unwrap()).len(),
+        1
+    );
+
+    mock_copyparty::mutate::add_drive(&root, "000009ff--newdrive00", 2).unwrap();
+    assert_eq!(
+        group_segments(client.list_segments("routes/").await.unwrap()).len(),
+        2,
+        "a new route appears as a second drive"
+    );
+
+    mock_copyparty::mutate::remove_drive(&root, "000009ff--newdrive00").unwrap();
+    assert_eq!(
+        group_segments(client.list_segments("routes/").await.unwrap()).len(),
+        1,
+        "removing the route drops the drive"
+    );
+}
+
 /// The size-mismatch fixture advertises an inflated `sz` (1200) for a file that
 /// is really 600 bytes on disk — the listing the client sees reports the lie.
 #[tokio::test(flavor = "multi_thread")]

@@ -41,6 +41,9 @@ async fn mcp_tools_and_reachability_behavior() {
         "set_reachable",
         "status",
         "teardown",
+        "add_segment",
+        "add_drive",
+        "remove_drive",
     ] {
         assert!(names.contains(&want), "missing tool {want}; got {names:?}");
     }
@@ -69,6 +72,19 @@ async fn mcp_tools_and_reachability_behavior() {
     let port = port_of(&sc);
     assert_eq!(sc["reachable"], json!(true));
     assert!(tcp_ok(port).await, "provisioned device is reachable");
+    assert_eq!(
+        sc["routes"][0]["segments"],
+        json!(3),
+        "single_drive starts with 3 segments"
+    );
+
+    // 2b. add_segment grows the active drive live (served on the same port).
+    let sc = call("add_segment", json!({"device_id":"d1"})).await;
+    assert_eq!(
+        sc["routes"][0]["segments"],
+        json!(4),
+        "add_segment appended one segment to the primary route"
+    );
 
     // 3. set_reachable(false) → listening socket closed → connect refused (Red).
     call("set_reachable", json!({"device_id":"d1","reachable":false})).await;

@@ -5,7 +5,9 @@
 //! downloads from a directory tree, with optional `pw` auth (query or `PW:`
 //! header → 401/403). Bind to an ephemeral port; drop to stop.
 
+pub mod control;
 pub mod fixtures;
+pub mod mutate;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

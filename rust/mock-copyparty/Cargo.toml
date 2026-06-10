@@ -19,3 +19,9 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
+
+[dev-dependencies]
+# The control-plane integration test drives the supervisor over a raw HTTP/1.1
+# socket (no HTTP-client dep) and asserts via the data listener; needs the async
+# read/write extension traits and timers. Features merge with the dep above.
+tokio = { workspace = true, features = ["io-util", "time"] }
