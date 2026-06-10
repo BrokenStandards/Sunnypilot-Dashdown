@@ -57,34 +57,62 @@ class SpikeMultiCamActivity : Activity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 
-    val videos = intent.getStringArrayExtra("videos") ?: defaultVideos()
-    val audio = intent.getStringExtra("audio") // optional qcamera.ts for the audio test
-    tileCount = videos.size
-    val videoRendererCount = tileCount + if (audio != null) 1 else 0
+    val mf = DefaultMediaSourceFactory(this)
 
-    factory = MultiRenderersFactory(this, videoRendererCount)
+    // Two modes:
+    //  • MULTI-SEGMENT (R1): driveDir + segs + cams → a player PLAYLIST of per-segment
+    //    MergingMediaSources (Design C). Each window is one segment's multi-cam merge, so every
+    //    merge is uniformly 1-period (MergingMediaSource never hits REASON_PERIOD_COUNT_MISMATCH,
+    //    even with ragged/lazy availability), and the drive-wide timeline = sum of window durations
+    //    (reuses RP3's windowsOf/locate/globalPosition math). This is the candidate production shape.
+    //  • SINGLE-SEGMENT (A0 default): videos[] (+ optional audio) merged into one window.
+    val driveDir = intent.getStringExtra("driveDir")
+    val segs = intent.getIntExtra("segs", 0)
+    val cams = intent.getStringArrayExtra("cams")
+    val audioName = intent.getStringExtra("audioName") // per-segment audio filename (multi mode)
+
+    val mediaSources = ArrayList<MediaSource>()
+    val audioPresent: Boolean
+
+    if (driveDir != null && segs > 0 && cams != null) {
+      tileCount = cams.size
+      audioPresent = audioName != null
+      for (s in 0 until segs) {
+        val segDir = "$driveDir--$s"
+        val segSources = ArrayList<MediaSource>()
+        for (cam in cams) segSources.add(mf.createMediaSource(item("$segDir/$cam")))
+        if (audioName != null) segSources.add(mf.createMediaSource(item("$segDir/$audioName")))
+        mediaSources.add(MergingMediaSource(true, true, *segSources.toTypedArray()))
+      }
+      Log.i(tag, "MULTI-SEG drive=$driveDir segs=$segs cams=${cams.size} audio=$audioPresent")
+    } else {
+      val videos = intent.getStringArrayExtra("videos") ?: defaultVideos()
+      val audio = intent.getStringExtra("audio")
+      tileCount = videos.size
+      audioPresent = audio != null
+      val segSources = ArrayList<MediaSource>()
+      for (p in videos) segSources.add(mf.createMediaSource(item(p)))
+      if (audio != null) segSources.add(mf.createMediaSource(item(audio)))
+      // adjustPeriodTimeOffsets + clipDurations: align independently-timed clips to a common window.
+      mediaSources.add(MergingMediaSource(true, true, *segSources.toTypedArray()))
+      Log.i(tag, "SINGLE-SEG videos=${videos.size} audio=$audioPresent")
+    }
+
     // Real tiles are the first `tileCount` video renderers; the trailing one (qcamera's own video,
-    // when an audio source is merged) stays disabled — we only want qcamera's audio.
+    // when audio is merged) stays disabled — we only want qcamera's audio.
+    val videoRendererCount = tileCount + if (audioPresent) 1 else 0
+    factory = MultiRenderersFactory(this, videoRendererCount)
     enabled = BooleanArray(videoRendererCount) { it < tileCount }
-    selector = TileTrackSelector(enabled, /* audioEnabled= */ audio != null)
+    selector = TileTrackSelector(enabled, audioPresent)
 
     player =
         ExoPlayer.Builder(this)
             .setRenderersFactory(factory)
             .setTrackSelector(selector)
             .build()
-
-    val mf = DefaultMediaSourceFactory(this)
-    val sources = ArrayList<MediaSource>()
-    for (p in videos) sources.add(mf.createMediaSource(item(p)))
-    if (audio != null) sources.add(mf.createMediaSource(item(audio)))
-    // adjustPeriodTimeOffsets + clipDurations: align independently-timed clips to a common window.
-    val merged = MergingMediaSource(true, true, *sources.toTypedArray())
-    player.setMediaSource(merged)
+    player.setMediaSources(mediaSources)
     player.playWhenReady = false
     player.prepare()
-
-    Log.i(tag, "videos=${videos.size} audio=${audio != null} videoRenderers=$videoRendererCount")
 
     setContentView(buildUi())
     routeSurfacesWhenReady()
@@ -140,7 +168,12 @@ class SpikeMultiCamActivity : Activity() {
           selector.reselect() // re-select tracks → decoder released/created, no seek
           Log.i(tag, "tile $idx enabled=${enabled[idx]}")
         })
-    buttons.addView(button("+5s") { player.seekTo(player.currentPosition + 5_000) })
+    buttons.addView(
+        button("Next seg") {
+          // Cross-WINDOW seek: jump to the next segment's start (tests boundary seek + same-frame).
+          val next = (player.currentMediaItemIndex + 1).coerceAtMost(player.mediaItemCount - 1)
+          player.seekTo(next, 0L)
+        })
     buttons.addView(button("Dump") { dumpStats() })
     root.addView(buttons, LinearLayout.LayoutParams(MATCH, WRAP))
     return root
@@ -172,7 +205,9 @@ class SpikeMultiCamActivity : Activity() {
 
   private fun dumpStats() {
     val sb = StringBuilder()
-    sb.append("pos=${player.currentPosition}ms state=${player.playbackState} pwr=${player.playWhenReady}\n")
+    sb.append(
+        "pos=${player.currentPosition}ms win=${player.currentMediaItemIndex}/${player.mediaItemCount} " +
+            "state=${player.playbackState} pwr=${player.playWhenReady}\n")
     factory.stats.forEachIndexed { i, s ->
       val c = s.counters
       c?.ensureUpdated()

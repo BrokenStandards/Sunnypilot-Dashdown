@@ -130,9 +130,9 @@ Merge only when drop counters are flat, all 6 hard cases pass, and recorded vide
 | # | Risk / open question | Smallest experiment |
 |---|---|---|
 | **A0** ✅ **PASS** | Does single-player/N-renderer actually frame-**lock** video, and does disabling a renderer's track **free its decoder**? | **DONE on the Pixel** (commit `800f559`, debug-only `app/src/debug/.../spike/`). Results in §7. |
-| **R1** ⬅ next gate | `MergingMediaSource` equal-period-count requirement vs lazily/progressively grown multi-segment HD playlists. **A0 used single segments, so this is still UNPROVEN.** | Merge each camera's *concatenated* segments (`ConcatenatingMediaSource2` per camera, then `MergingMediaSource`), play across segment boundaries; test ragged counts (qcamera 16, HD 3-so-far) and confirm no `IllegalMergeException` + smooth boundary crossings. |
+| **R1** ✅ **PASS** | `MergingMediaSource` equal-period-count requirement vs multi-segment/ragged playlists. | **DONE** — dissolved by the design (§7). Use a player **playlist of per-segment merges** (one window per segment), so every merge is 1-period → mismatch impossible, and the drive timeline reuses RP3's window math. Verified seamless boundary crossings + cross-window seek on the Pixel. |
 | **R2** | Global stall (one renderer rebuffers → all pause) vs "show tile 1 fast, stream the rest" UX. | Delay one HD source in the instrumented test; decide readiness policy (don't enable a tile's track until its segments buffer). |
-| **R3** | Concurrent HEVC decoder ceiling for GRID4 (4 tiles + audio) on real/low-end devices. | `getMaxSupportedInstances()` on Pixel + a mid-range device; attempt 4 simultaneous HEVC decoders; cap/degrade if it fails. |
+| **R3** 🟡 **mostly clear** | Concurrent HEVC decoder ceiling for GRID4 on real/low-end devices. | **3 simultaneous HEVC + audio = drop-free, locked on the Pixel** (§7). GRID4 ≤4 video decoders < CDD-guaranteed 6. Still query `getMaxSupportedInstances()` at runtime for low-end devices + degrade. |
 | **R4** | Per-tile Surface recreation in Compose (rotation/recomposition) → stuck/black tile. | Rotate repeatedly during the spike; confirm `MSG_SET_VIDEO_OUTPUT` re-send restores the tile. |
 | **R5** | Custom multi-renderer path historically breaks on media3 bumps. | Pin `media3 = 1.10.1`; add the instrumented multi-renderer test to CI as a regression gate before any media3 bump. |
 | **R6** | If A0 fails, does B meet "exact same-frame at toggle"? | Prototype B's controller; confirm a one-shot exact seek at the toggle moment lands same-frame, then PLL holds smoothly. |
@@ -163,9 +163,30 @@ the production pattern for Commit 2 — *not* `MappingTrackSelector`.
 - **Audio + 2 video together (the old failure mode):** qcamera AAC on the audio renderer + 2 HEVC tiles — steady-state `dropped=0` on both tiles, **zero audio underruns**. Only cost: a one-time ~0.9 s (~18-frame) startup catch-up when the audio clock engages (mitigate by buffering before play; otherwise an imperceptible initial settle).
 - **Surface routing:** attaching a `Surface` to a renderer *before* it has a selected track is a safe no-op; the decoder initializes to the stored surface on selection. Per-renderer `MSG_SET_VIDEO_OUTPUT` routing works; do **not** call `player.setVideoSurface` (broadcasts to all).
 
-**What A0 did NOT cover (next gates before/within the rewrite):** R1 (multi-segment
-merge — A0 used single segments), R3 (4 simultaneous HEVC decoders for GRID4), R4
-(Compose surface recreation on rotation). R1 is the immediate next experiment.
+### R1 + R3 results — **PASS** (same harness, multi-segment mode)
+
+Extended the spike to a **player playlist of per-segment `MergingMediaSource`s** (one
+window = one segment) — the candidate production shape — and ran road+wide+audio over
+6 segments, then road+wide+driver+audio over 4.
+
+- **Seamless segment boundary crossing (continuous playback):** at the seg0→seg1 roll-over, `win` 0→1, `pos` 58.6s→0.4s, `rendered` kept climbing at a steady ~20 fps with **no stall and zero new drops**; both tiles stayed locked.
+- **Cross-window seek** (jump to next segment's start): lands cleanly, both tiles re-render in exact lockstep, smooth resume, `dropped=0`. Frame-lock visually confirmed across the seek (downtown intersection, both cams same instant).
+- **No `MergingMediaSource` period-count problem, ever:** per-segment merges are uniformly 1-period, so ragged/lazy availability can't trigger `REASON_PERIOD_COUNT_MISMATCH`. A segment missing a camera just blanks that tile for that window (per-window track selection).
+- **R3 — 3 simultaneous HEVC decoders + audio:** all three tiles in lockstep, `dropped` flat at the one-time startup catch-up (drop-free steady state). GRID4 (≤4 video decoders) sits under the CDD-guaranteed 6.
+
+### Finalized production design (validated end-to-end)
+
+- One `ExoPlayer`; `MultiRenderersFactory` building N video renderers (N = max tiles + 1 qcamera-video slot when audio is merged) + the default audio renderer; `buildSecondaryVideoRenderer` → null (no pre-warming).
+- A **direct `TrackSelector`** (`TileTrackSelector`) mapping the k-th merged video group → the k-th video renderer **positionally**, per window — NOT `MappingTrackSelector`.
+- Player **playlist**: `setMediaSources([ per-segment MergingMediaSource(true, true, cams… , qcamera) ])`, one window per segment.
+- Each tile's `Surface` routed to its renderer via `player.createMessage(renderer).setType(MSG_SET_VIDEO_OUTPUT)` (never `setVideoSurface`, which broadcasts).
+- Timeline/scrubber/filmstrip = RP3's `windowsOf`/`locate`/`globalPosition` (windows = segments); seek = `seekTo(windowIndex, offsetMs)`.
+- Camera toggle = flip the enabled flag + `trackSelector` re-selection (no seek); a disabled tile's HW decoder is released.
+- Audio = qcamera's audio group on the audio renderer (same clock → no audio glitch).
+
+**Still to handle during the build:** R4 (Compose `Surface` recreation on rotation —
+re-send `MSG_SET_VIDEO_OUTPUT`), the ~0.9 s audio-engage startup catch-up (pre-buffer),
+ragged-segment tile-blanking polish, and low-end `getMaxSupportedInstances()` gating.
 
 ---
 
