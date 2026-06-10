@@ -30,6 +30,8 @@ data class DeviceEditState(
     val saving: Boolean = false,
     val error: String? = null,
     val saved: Boolean = false,
+    /** Non-null while a just-added device's auto-detected id awaits confirmation. */
+    val pendingDongle: String? = null,
 ) {
   val portValue: UShort?
     get() = port.trim().toUShortOrNull()
@@ -46,6 +48,9 @@ class DeviceEditViewModel(private val repo: DashdownRepository, private val devi
 
   /** The device as loaded, so an edit preserves the settings fields not shown on this form. */
   private var original: Device? = null
+
+  /** The just-added device awaiting dongle-id confirmation (set by [save]). */
+  private var added: Device? = null
 
   init {
     if (deviceId != null) load()
@@ -97,10 +102,9 @@ class DeviceEditViewModel(private val repo: DashdownRepository, private val devi
       _state.update { it.copy(saving = true, error = null) }
       try {
         val base = original
-        val device =
-            if (base != null) {
-              // Preserve the settings fields (file selection, retention, auto-*) from the loaded
-              // device; a blank password keeps the existing one.
+        if (base != null) {
+          // Edit: preserve the settings fields not shown here; a blank password keeps the current.
+          repo.updateDevice(
               base.copy(
                   name = s.name.trim(),
                   dongleLabel = s.dongleLabel.ifBlank { null },
@@ -109,31 +113,58 @@ class DeviceEditViewModel(private val repo: DashdownRepository, private val devi
                   port = port,
                   activeMode = s.activeMode,
                   password = s.password.ifBlank { base.password },
-              )
-            } else {
-              Device(
-                  id = 0,
-                  name = s.name.trim(),
-                  dongleLabel = s.dongleLabel.ifBlank { null },
-                  hotspotIp = s.hotspotIp.trim(),
-                  wifiIp = s.wifiIp.ifBlank { null },
-                  port = port,
-                  activeMode = s.activeMode,
-                  password = s.password.ifBlank { null },
-                  autoSync = false,
-                  // Lightweight default: previews only (qcamera + muxed audio).
-                  fileSelection =
-                      FileSelection(false, false, false, true, false, false, false, false),
-                  retentionMaxMinutes = null,
-                  autoDeleteFromComma = false,
-                  autoDeleteMinAgeMin = 60,
-              )
-            }
-        if (base != null) repo.updateDevice(device) else repo.addDevice(device)
-        _state.update { it.copy(saving = false, saved = true) }
+              ))
+          _state.update { it.copy(saving = false, saved = true) }
+          return@launch
+        }
+
+        // New device: add it, then connect and offer the auto-detected device id
+        // for confirmation if the user left the Dongle ID blank.
+        val device =
+            repo.addDevice(
+                Device(
+                    id = 0,
+                    name = s.name.trim(),
+                    dongleLabel = s.dongleLabel.ifBlank { null },
+                    hotspotIp = s.hotspotIp.trim(),
+                    wifiIp = s.wifiIp.ifBlank { null },
+                    port = port,
+                    activeMode = s.activeMode,
+                    password = s.password.ifBlank { null },
+                    autoSync = false,
+                    // Lightweight default: previews only (qcamera + muxed audio).
+                    fileSelection =
+                        FileSelection(false, false, false, true, false, false, false, false),
+                    retentionMaxMinutes = null,
+                    autoDeleteFromComma = false,
+                    autoDeleteMinAgeMin = 60,
+                ))
+        val detected =
+            if (s.dongleLabel.isBlank()) {
+              runCatching { repo.detectDeviceName(device.id) }.getOrNull()?.ifBlank { null }
+            } else null
+        if (detected != null) {
+          added = device
+          _state.update { it.copy(saving = false, pendingDongle = detected) }
+        } else {
+          _state.update { it.copy(saving = false, saved = true) }
+        }
       } catch (t: Throwable) {
         _state.update { it.copy(saving = false, error = UiError.from(t).message) }
       }
     }
   }
+
+  /** Accept the detected device id as the dongle label, then finish. */
+  fun confirmDongle() {
+    val name = _state.value.pendingDongle ?: return
+    val dev = added ?: return
+    viewModelScope.launch {
+      runCatching { repo.updateDevice(dev.copy(dongleLabel = name)) }
+      _state.update { it.copy(pendingDongle = null, saved = true) }
+    }
+  }
+
+  /** Dismiss the detected id (leave the dongle label unset) and finish. */
+  fun dismissDongle() = _state.update { it.copy(pendingDongle = null, saved = true) }
 }

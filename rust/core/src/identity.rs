@@ -93,12 +93,19 @@ pub fn parse_hostname(html: &str) -> Option<String> {
     None
 }
 
-/// Trim and minimally HTML-unescape an extracted token.
+/// Trim, minimally HTML-unescape, and strip copyparty's `copyparty @ ` label so
+/// the bare device hostname remains (e.g. `copyparty @ comma-e0e384a` →
+/// `comma-e0e384a`). This is both the pinned identity and the value offered as
+/// the device's dongle id.
 fn clean(s: &str) -> String {
-    s.trim()
+    let s = s
+        .trim()
         .replace("&amp;", "&")
         .replace("&lt;", "<")
-        .replace("&gt;", ">")
+        .replace("&gt;", ">");
+    let s = s.trim();
+    s.strip_prefix("copyparty @ ")
+        .unwrap_or(s)
         .trim()
         .to_string()
 }
@@ -125,6 +132,13 @@ mod tests {
     fn falls_back_to_title() {
         let html = "<html><head><title>comma-abc123 - /</title></head><body>no srv_info here</body></html>";
         assert_eq!(parse_hostname(html).as_deref(), Some("comma-abc123"));
+    }
+
+    #[test]
+    fn strips_copyparty_label_prefix() {
+        // Real devices render the name with copyparty's "copyparty @ " label.
+        let html = r#"<span id="srv_info"><span>copyparty @ comma-e0e384a</span> // <span>8 GiB free of 88 GiB</span></span>"#;
+        assert_eq!(parse_hostname(html).as_deref(), Some("comma-e0e384a"));
     }
 
     #[test]
