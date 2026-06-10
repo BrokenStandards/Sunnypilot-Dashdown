@@ -77,6 +77,24 @@ class DrivesListViewModel(private val repo: DashdownRepository, private val devi
     }
   }
 
+  /**
+   * Silent foreground poll tick: refresh the drive-list membership without ever touching
+   * `refreshing`/ `loading`/`error`, so a periodic tick never flashes the pull-to-refresh spinner.
+   * Reachability-gated (don't network-poll a dead device) and defers to B2 — when a background
+   * download is active the index is already being kept fresh, so we only reclassify from disk
+   * (`offline=true`) to avoid redundant network sync + write contention.
+   */
+  fun silentRefresh() {
+    viewModelScope.launch {
+      val conn = runCatching { repo.checkConnectivity(deviceId) }.getOrNull()
+      if (conn?.reachable != true) return@launch
+      val drives =
+          runCatching { repo.listDrives(deviceId, offline = conn.downloading) }.getOrNull()
+              ?: return@launch
+      _state.update { it.copy(drives = drives) }
+    }
+  }
+
   fun togglePreserve(drive: Drive) {
     viewModelScope.launch {
       runCatching { repo.setPreserved(deviceId, drive.driveKey, !drive.preserved) }
@@ -98,5 +116,10 @@ class DrivesListViewModel(private val repo: DashdownRepository, private val devi
               .getOrNull()
       if (path != null) _thumbnails.update { it + (drive.driveKey to path) }
     }
+  }
+
+  companion object {
+    /** Foreground silent network re-sync cadence for the drive list while it is open. */
+    const val DRIVES_POLL_MS = 20_000L
   }
 }

@@ -39,6 +39,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import org.sunnypilot.dashdown.ui.components.ConnDotIndicator
+import org.sunnypilot.dashdown.ui.components.PollWhileResumed
 import org.sunnypilot.dashdown.ui.rememberRepository
 
 /** Route wrapper: builds the VM from the app repository and refreshes on each resume. */
@@ -48,6 +49,7 @@ fun DeviceListRoute(
     onDeviceClick: (Long) -> Unit,
     onDeviceEdit: (Long) -> Unit,
     onDeviceSettings: (Long) -> Unit,
+    dotPollMs: Long = DeviceListViewModel.DOT_POLL_MS,
 ) {
   val repo = rememberRepository()
   val vm: DeviceListViewModel =
@@ -58,6 +60,8 @@ fun DeviceListRoute(
     vm.refresh()
     onPauseOrDispose {}
   }
+  // While open, silently re-probe the connectivity dots on an interval (no spinner, no downloads).
+  PollWhileResumed(dotPollMs) { vm.silentRefresh() }
   DeviceListScreen(
       state = state,
       onAddDevice = onAddDevice,

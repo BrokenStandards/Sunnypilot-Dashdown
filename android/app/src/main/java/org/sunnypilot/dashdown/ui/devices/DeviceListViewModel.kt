@@ -60,11 +60,44 @@ class DeviceListViewModel(private val repo: DashdownRepository) : ViewModel() {
     }
   }
 
+  /**
+   * Silent foreground poll tick: re-resolve each device's dot + summary without touching `loading`
+   * or `error`, so a periodic refresh never flashes the spinner or surfaces a transient probe error
+   * on a working screen. A device whose connectivity probe fails keeps its **last-known dot**
+   * (hysteresis) instead of flickering to gray on momentary jitter.
+   */
+  fun silentRefresh() {
+    viewModelScope.launch {
+      val devices = runCatching { repo.listDevices() }.getOrNull() ?: return@launch
+      val prevDot = _state.value.rows.associate { it.device.id to it.dot }
+      val rows = coroutineScope {
+        devices
+            .map { d ->
+              async {
+                val dot =
+                    runCatching { repo.checkConnectivity(d.id).dot }.getOrNull() ?: prevDot[d.id]
+                val summary =
+                    runCatching { summarize(repo.listDrives(d.id, offline = true)) }
+                        .getOrDefault("")
+                DeviceRow(d, dot, summary)
+              }
+            }
+            .awaitAll()
+      }
+      _state.update { it.copy(rows = rows) }
+    }
+  }
+
   fun remove(deviceId: Long) {
     viewModelScope.launch {
       runCatching { repo.removeDevice(deviceId) }
       refresh()
     }
+  }
+
+  companion object {
+    /** Foreground re-probe cadence for the connectivity dot while the device list is open. */
+    const val DOT_POLL_MS = 8_000L
   }
 }
 
