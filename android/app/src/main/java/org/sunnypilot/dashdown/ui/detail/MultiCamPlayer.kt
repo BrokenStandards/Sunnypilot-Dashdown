@@ -68,6 +68,9 @@ import uniffi.dashdown_core.FileKind
 
 private const val FILMSTRIP_TICKS = 12
 private const val TICK_MS = 120L
+// Correct drifted follower players at most this often (≈1 s) — the scrubber still
+// updates every tick; only the corrective seeks are throttled to avoid churn.
+private const val RESYNC_EVERY_TICKS = 8
 
 // openpilot writes ~60 s segments. ExoPlayer reports a `.ts` window's duration
 // only once that segment buffers, so unbuffered windows read C.TIME_UNSET; we
@@ -166,8 +169,12 @@ fun MultiCamPlayer(
   // The canonical drive timeline: qcamera if present (the lightweight, usually
   // most-complete stream), else the first visible HD player.
   val timelineSource = qPlayer ?: visible.firstOrNull()?.let { playerFor(it) }
-  // The clock master drives the scrubber; followers chase it.
-  val master = visible.firstOrNull()?.let { playerFor(it) }
+  // The clock master drives the scrubber; followers chase it (and only followers
+  // are ever re-seeked). When audio is on, the qcamera audio player is the master
+  // so it is NEVER seeked — a seek glitches audio badly, whereas nudging a video
+  // follower by ~1 frame is imperceptible. Otherwise the first visible tile leads.
+  val master =
+      if (audioOn && qPlayer != null) qPlayer else visible.firstOrNull()?.let { playerFor(it) }
 
   // Players that should actually be running: the visible tiles, plus the qcamera
   // (as a hidden audio source) when audio is on and it isn't already a tile.
@@ -214,8 +221,20 @@ fun MultiCamPlayer(
     onDispose { attached.forEach { (_, player, l) -> player.removeListener(l) } }
   }
 
-  // Keep qcamera muted/unmuted per the toggle.
-  LaunchedEffect(audioOn, qPlayer) { qPlayer?.volume = if (audioOn) 1f else 0f }
+  // Mute/unmute qcamera per the toggle. When turning audio ON, qcamera becomes the
+  // clock master, so align it to the current position + play state (it may have been
+  // idle until now). When turning OFF, stop it unless it's also the visible tile.
+  LaunchedEffect(audioOn, qPlayer) {
+    val p = qPlayer ?: return@LaunchedEffect
+    p.volume = if (audioOn) 1f else 0f
+    if (audioOn) {
+      val (idx, off) = locate(windowsOf(p), positionMs)
+      p.seekTo(idx.coerceIn(0, (p.mediaItemCount - 1).coerceAtLeast(0)), off)
+      p.playWhenReady = playing
+    } else if (visible.none { it == Tile.Qcam }) {
+      p.playWhenReady = false // muted and off-screen → don't keep decoding
+    }
+  }
 
   // Populate each enabled HD camera's playlist by remuxing its segments to MP4.
   // Progressive: prepare the first segment as soon as it's ready (so a frame shows
@@ -269,9 +288,12 @@ fun MultiCamPlayer(
     }
   }
 
-  // Master clock: publish the global position + total, and re-seek any follower
-  // (other tiles + the audio player) that has drifted more than ~1 frame.
+  // Master clock: publish the global position + total every tick (smooth scrubber),
+  // but only correct drifted followers every RESYNC_EVERY_TICKS. The master is never
+  // seeked, and a seek glitches playback, so corrective seeks are throttled — and
+  // with the audio player elected master above, audio is never seeked at all.
   LaunchedEffect(visible, audioOn) {
+    var tick = 0
     while (true) {
       val src = qPlayer ?: master
       if (src != null) {
@@ -282,16 +304,19 @@ fun MultiCamPlayer(
       if (m != null) {
         val w = windowsOf(timelineSource)
         positionMs = globalPosition(w, m.currentMediaItemIndex, m.currentPosition)
-        activePlayers()
-            .filter { it !== m }
-            .forEach { f ->
-              val fg = globalPosition(w, f.currentMediaItemIndex, f.currentPosition)
-              if (shouldResync(positionMs, fg)) {
-                val (idx, off) = locate(w, positionMs)
-                f.seekTo(idx.coerceIn(0, (f.mediaItemCount - 1).coerceAtLeast(0)), off)
+        if (tick % RESYNC_EVERY_TICKS == 0) {
+          activePlayers()
+              .filter { it !== m }
+              .forEach { f ->
+                val fg = globalPosition(w, f.currentMediaItemIndex, f.currentPosition)
+                if (shouldResync(positionMs, fg)) {
+                  val (idx, off) = locate(w, positionMs)
+                  f.seekTo(idx.coerceIn(0, (f.mediaItemCount - 1).coerceAtLeast(0)), off)
+                }
               }
-            }
+        }
       }
+      tick++
       delay(TICK_MS)
     }
   }
