@@ -20,7 +20,16 @@ SERIAL="${ANDROID_SERIAL:-$(adb devices | awk 'NR>1 && $2=="device"{print $1; ex
 [ -n "$SERIAL" ] || { echo "no adb device connected" >&2; exit 1; }
 
 ENVARGS=()
-for kv in "$@"; do ENVARGS+=( -e "$kv" ); done
+have_port=0
+have_wifi=0
+for kv in "$@"; do
+  ENVARGS+=( -e "$kv" )
+  case "$kv" in PORT=*) have_port=1 ;; WIFI_IP=*) have_wifi=1 ;; esac
+done
+# Defaults for optional add_device args (Maestro can't default a `${VAR}` and a
+# flow `env:` block would shadow these -e values). Harmless for other flows.
+[ "$have_port" = 1 ] || ENVARGS+=( -e "PORT=8080" )
+[ "$have_wifi" = 1 ] || ENVARGS+=( -e "WIFI_IP=" )
 
 # Maestro needs a JDK 17+; default to the project's JDK if JAVA_HOME isn't a 17+.
 export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk}"

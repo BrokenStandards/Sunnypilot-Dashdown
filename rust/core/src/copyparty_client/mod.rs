@@ -37,10 +37,14 @@ impl CopypartyClient {
         // its fingerprint (the trust decision is made in `crate::identity`).
         let cert_capture: CertCapture = Arc::new(Mutex::new(None));
         let tls = pinning::pinning_client_config(cert_capture.clone());
-        // Devices are on the LAN (hotspot/wifi IPs); never route via a proxy.
+        // Devices are on the LAN (hotspot/wifi IPs); never route via a proxy. A
+        // short connect timeout makes multi-IP resolution fail fast on a dead
+        // candidate (e.g. the comma's hotspot IP while you're on home Wi-Fi)
+        // instead of stalling on the OS TCP timeout before trying the next IP.
         let http = reqwest::Client::builder()
             .no_proxy()
             .use_preconfigured_tls(tls)
+            .connect_timeout(std::time::Duration::from_secs(3))
             .build()?;
         Ok(Self {
             base: normalize_base(base_url)?,

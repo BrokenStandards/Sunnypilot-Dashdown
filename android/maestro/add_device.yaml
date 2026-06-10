@@ -1,16 +1,14 @@
-# Add a device through the UI. Override args with -e (see tools/dd-ui.sh):
+# Add a device through the UI. Pass args with -e (tools/dd-ui.sh supplies PORT
+# and WIFI_IP defaults if omitted):
 #   NAME     device name
 #   IP       primary IP (goes in the "Hotspot IP" field)
-#   PORT     copyparty port (default 8080)
+#   PORT     copyparty port (default 8080 via dd-ui.sh)
 #   WIFI_IP  optional second IP (the "Home/Wi-Fi IP" field) for multi-IP testing
+# NOTE: no flow-level `env:` block — a flow `env:` shadows CLI `-e` in Maestro,
+# so all args come from `-e` (dd-ui.sh) to keep them overridable.
 # Leaves the Dongle ID blank so first-connect detection runs, then auto-confirms
 # the detected id if the dialog appears (a no-op when the device is unreachable).
 appId: org.sunnypilot.dashdown
-env:
-  NAME: escape2020
-  IP: 192.168.1.100
-  PORT: "8080"
-  WIFI_IP: ""
 ---
 - launchApp
 - tapOn:
