@@ -30,7 +30,7 @@ impl Fixture {
 }
 
 /// Write the full file set for one segment under `routes/<seg>/`.
-fn full_segment(root: &Path, seg: &str) {
+pub fn full_segment(root: &Path, seg: &str) {
     let base = root.join("routes").join(seg);
     fs::create_dir_all(&base).unwrap();
     fs::write(base.join("qcamera.ts"), vec![0u8; 1200]).unwrap();

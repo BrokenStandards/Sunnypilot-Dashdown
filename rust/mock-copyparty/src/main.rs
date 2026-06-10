@@ -12,8 +12,11 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use mock_copyparty::control::{serve_control, Supervisor};
 use mock_copyparty::{fixtures, MockServer, ServeOptions};
+use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() {
@@ -25,6 +28,7 @@ async fn main() {
             .map(String::as_str)
             .unwrap_or("single_drive");
         let port = flag(&args, "--port").and_then(|s| s.parse::<u16>().ok());
+        let control_port = flag(&args, "--control-port").and_then(|s| s.parse::<u16>().ok());
         let password = flag(&args, "--password");
         let fixture = match name {
             "gap_split" => fixtures::gap_split(),
@@ -34,6 +38,34 @@ async fn main() {
             "single_drive" => fixtures::single_drive(),
             other => panic!("unknown fixture: {other}"),
         };
+
+        // Supervisor mode: a fixed data port served alongside an always-up HTTP
+        // control port that mutates the tree / toggles reachability at runtime.
+        if let Some(cport) = control_port {
+            let dport =
+                port.expect("--control-port requires --port (a fixed data port for adb reverse)");
+            let data_addr = SocketAddr::from(([127, 0, 0, 1], dport));
+            let ctl_addr = SocketAddr::from(([127, 0, 0, 1], cport));
+            let root = fixture.dir.path().to_path_buf();
+            let overrides = fixture.size_overrides.clone();
+            let sup = Arc::new(Mutex::new(
+                Supervisor::new(root, data_addr, password, overrides)
+                    .await
+                    .expect("failed to start data server"),
+            ));
+            serve_control(ctl_addr, sup)
+                .await
+                .expect("failed to start control server");
+            // `fixture` (its TempDir) must outlive the served root.
+            let _keep = fixture;
+            println!(
+                "mock-copyparty serving fixture '{name}' at http://127.0.0.1:{dport}/ \
+                 (control http://127.0.0.1:{cport}/)"
+            );
+            std::future::pending::<()>().await;
+            return;
+        }
+
         let addr: Option<SocketAddr> = port.map(|p| SocketAddr::from(([127, 0, 0, 1], p)));
         let server = MockServer::spawn_with(
             fixture.dir.path().to_path_buf(),
