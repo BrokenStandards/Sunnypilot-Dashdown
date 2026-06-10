@@ -1,4 +1,4 @@
-package org.sunnypilot.dashdown.spike;
+package org.sunnypilot.dashdown.ui.detail;
 
 import android.content.Context;
 import android.os.Handler;
@@ -15,22 +15,23 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * SPIKE A0 (throwaway, debug-only). Builds {@code videoRendererCount} independent
- * {@link MediaCodecVideoRenderer}s inside ONE ExoPlayer so N tiles share one clock — the candidate
- * fix for the chase-by-seek choppiness. Each renderer gets its own {@link VideoRendererEventListener}
- * so we can read per-tile decoder counters (dropped/rendered frames) to prove smoothness.
+ * Builds {@code videoRendererCount} independent {@link MediaCodecVideoRenderer}s inside ONE
+ * ExoPlayer so N camera tiles share one clock — the structural fix for multi-camera sync (no
+ * master/follower, no chase-seeks, no decoder flushes). Each renderer keeps an index-stable slot
+ * (see {@code CameraId.rendererIndex}); a per-renderer {@link VideoRendererEventListener} exposes
+ * "first frame rendered" so each tile can clear its "Preparing HD…" spinner independently.
  *
- * <p>Not Kotlin: the media3 extension points are Java and we avoid Kotlin platform-type friction on
- * the {@code MappingTrackSelector.selectTracks} override (see {@link TileTrackSelector}).
+ * <p>Written in Java (not Kotlin) to override the media3 extension points without Kotlin
+ * platform-type friction; pairs with {@link TileMultiCamSelector}, which routes one merged video
+ * group to each renderer (media3's {@code MappingTrackSelector} can't spread video groups).
  */
 @OptIn(markerClass = UnstableApi.class)
 public class MultiRenderersFactory extends DefaultRenderersFactory {
 
-  /** Live, thread-safe per-renderer stats (updated on the playback thread, read on the UI thread). */
+  /** Live readiness for one video renderer (written on the playback thread, read on the UI thread). */
   public static final class TileStats {
-    @Nullable public volatile DecoderCounters counters;
+    /** True once this renderer has rendered a frame; cleared when it is disabled (track deselected). */
     public volatile boolean firstFrameRendered;
-    public volatile int lastDroppedBatch;
   }
 
   private final int videoRendererCount;
@@ -45,7 +46,7 @@ public class MultiRenderersFactory extends DefaultRenderersFactory {
     }
   }
 
-  /** The N video renderers in player renderer-index order; each is the target for MSG_SET_VIDEO_OUTPUT. */
+  /** The N video renderers in renderer-index order; each is the target for MSG_SET_VIDEO_OUTPUT. */
   public List<Renderer> getVideoRenderers() {
     return videoRenderers;
   }
@@ -66,24 +67,13 @@ public class MultiRenderersFactory extends DefaultRenderersFactory {
       VideoRendererEventListener listener =
           new VideoRendererEventListener() {
             @Override
-            public void onVideoEnabled(DecoderCounters counters) {
-              s.counters = counters;
-            }
-
-            @Override
-            public void onVideoDisabled(DecoderCounters counters) {
-              s.firstFrameRendered = false;
-              s.counters = null;
-            }
-
-            @Override
             public void onRenderedFirstFrame(Object output, long renderTimeMs) {
               s.firstFrameRendered = true;
             }
 
             @Override
-            public void onDroppedFrames(int count, long elapsedMs) {
-              s.lastDroppedBatch = count;
+            public void onVideoDisabled(DecoderCounters counters) {
+              s.firstFrameRendered = false;
             }
           };
       MediaCodecVideoRenderer renderer =
@@ -93,7 +83,6 @@ public class MultiRenderersFactory extends DefaultRenderersFactory {
               .setEnableDecoderFallback(enableDecoderFallback)
               .setEventHandler(eventHandler)
               .setEventListener(listener)
-              .setMaxDroppedFramesToNotify(10)
               .build();
       videoRenderers.add(renderer);
       out.add(renderer);

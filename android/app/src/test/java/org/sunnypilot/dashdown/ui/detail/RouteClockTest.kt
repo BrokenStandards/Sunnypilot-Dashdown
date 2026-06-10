@@ -1,11 +1,10 @@
 package org.sunnypilot.dashdown.ui.detail
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Pure-JVM tests for the multi-camera layout + sync helpers (RP3). */
+/** Pure-JVM tests for the single-player multi-camera layout + mapping helpers. */
 class RouteClockTest {
 
   @Test
@@ -34,29 +33,60 @@ class RouteClockTest {
 
   @Test
   fun tilePlanClampsOutOfRange() {
-    // 0 enabled tiles can't happen (we always show ≥1) but must not crash.
     assertEquals(TilePlan.SINGLE, tilePlan(0, landscape = false))
-    // More than 4 (shouldn't occur: only road/wide/driver + qcamera) → grid.
     assertEquals(TilePlan.GRID4, tilePlan(9, landscape = true))
   }
 
   @Test
-  fun resyncOnlyPastOneFrame() {
-    // Within ~1 frame (≤60 ms): leave it alone.
-    assertFalse(shouldResync(1_000L, 1_000L))
-    assertFalse(shouldResync(1_000L, 1_050L))
-    assertFalse(shouldResync(1_000L, 940L))
-    // Beyond the threshold (either direction): re-seek.
-    assertTrue(shouldResync(1_000L, 1_200L))
-    assertTrue(shouldResync(2_000L, 1_000L))
+  fun camerasPinToStableRenderers() {
+    // The toggle bar covers exactly the three HD cameras, each on a distinct, fixed renderer.
+    assertEquals(3, CameraId.entries.size)
+    assertEquals(0, CameraId.ROAD.rendererIndex)
+    assertEquals(1, CameraId.WIDE.rendererIndex)
+    assertEquals(2, CameraId.DRIVER.rendererIndex)
+    // qcamera's video renderer is distinct from all HD cameras, and all fit in
+    // VIDEO_RENDERER_COUNT.
+    val indices = CameraId.entries.map { it.rendererIndex } + QCAM_VIDEO_RENDERER_INDEX
+    assertEquals(indices.size, indices.toSet().size)
+    assertTrue(indices.all { it < VIDEO_RENDERER_COUNT })
   }
 
   @Test
-  fun cameraIdsMapToHevcKinds() {
-    // The toggle bar covers exactly the three HD cameras.
-    assertEquals(3, CameraId.entries.size)
-    assertEquals("Road", CameraId.ROAD.label)
-    assertEquals("Wide", CameraId.WIDE.label)
-    assertEquals("Driver", CameraId.DRIVER.label)
+  fun visibleSlotsAreEnabledHdCamerasInCanonicalOrder() {
+    // Enabled out of canonical order still renders road-before-wide-before-driver.
+    val slots = visibleSlots(setOf(CameraId.DRIVER, CameraId.ROAD))
+    assertEquals(listOf(VideoSlot.Hd(CameraId.ROAD), VideoSlot.Hd(CameraId.DRIVER)), slots)
+  }
+
+  @Test
+  fun visibleSlotsFallBackToQcameraPreview() {
+    assertEquals(listOf<VideoSlot>(VideoSlot.QcamVideo), visibleSlots(emptySet()))
+  }
+
+  @Test
+  fun windowLayoutOrdersMergedHdThenQcamera() {
+    // Merged road+wide, both present this segment: video groups are [road, wide, qcam] in order.
+    val layout =
+        windowVideoLayout(listOf(CameraId.ROAD, CameraId.WIDE), segmentNum = 3u) { _, _ -> true }
+    assertEquals(
+        listOf(VideoSlot.Hd(CameraId.ROAD), VideoSlot.Hd(CameraId.WIDE), VideoSlot.QcamVideo),
+        layout,
+    )
+  }
+
+  @Test
+  fun windowLayoutSkipsCamerasMissingThisSegment() {
+    // Ragged download: wide lacks segment 7, so this window merges only road + qcamera.
+    val layout =
+        windowVideoLayout(listOf(CameraId.ROAD, CameraId.WIDE), segmentNum = 7u) { cam, _ ->
+          cam == CameraId.ROAD
+        }
+    assertEquals(listOf(VideoSlot.Hd(CameraId.ROAD), VideoSlot.QcamVideo), layout)
+  }
+
+  @Test
+  fun windowLayoutQcameraOnlyWhenNoHdMerged() {
+    assertEquals(
+        listOf<VideoSlot>(VideoSlot.QcamVideo), windowVideoLayout(emptyList(), 0u) { _, _ -> true })
   }
 }

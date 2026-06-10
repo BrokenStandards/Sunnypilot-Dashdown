@@ -19,8 +19,8 @@ data class DriveDetailUiState(
     val status: DriveSyncStatus? = null,
     val loading: Boolean = true,
     val error: String? = null,
-    /** Ordered absolute paths of every downloaded `qcamera.ts` — one continuous drive timeline. */
-    val playablePaths: List<String> = emptyList(),
+    /** Every downloaded `qcamera.ts` (segment number + path), ordered — the drive-wide timeline. */
+    val qcamera: List<QSegment> = emptyList(),
     /** HD cameras (road/wide/driver) that have downloaded segments — the toggle bar. */
     val hdCameras: List<CameraTrack> = emptyList(),
 )
@@ -51,7 +51,7 @@ class DriveDetailViewModel(
               status = status,
               loading = false,
               error = null,
-              playablePaths = resolvePlayables(),
+              qcamera = resolveQcamera(),
               hdCameras = resolveHdCameras(),
           )
         }
@@ -71,10 +71,16 @@ class DriveDetailViewModel(
 
   /**
    * Every downloaded `qcamera.ts` in this drive, ordered by segment — resolved by the core (the
-   * single source of truth for on-disk paths). The player treats them as one drive-wide timeline.
+   * single source of truth for on-disk paths). Carries each segment's number so the player can
+   * align HD cameras to qcamera windows by number (downloads can be ragged). One drive-wide
+   * timeline.
    */
-  private suspend fun resolvePlayables(): List<String> =
-      runCatching { repo.driveLocalPaths(deviceId, driveKey, FileKind.Q_CAMERA).map { it.path } }
+  private suspend fun resolveQcamera(): List<QSegment> =
+      runCatching {
+            repo.driveLocalPaths(deviceId, driveKey, FileKind.Q_CAMERA).map {
+              QSegment(it.segmentNum, it.path)
+            }
+          }
           .getOrElse { emptyList() }
 
   /**
