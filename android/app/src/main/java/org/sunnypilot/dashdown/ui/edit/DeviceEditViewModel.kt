@@ -22,7 +22,7 @@ data class DeviceEditState(
     val dongleLabel: String = "",
     val hotspotIp: String = "192.168.43.1",
     val wifiIp: String = "",
-    val port: String = "3923",
+    val port: String = "8080", // sunnypilot's copyparty default (HTTP+HTTPS on one port)
     val activeMode: ConnMode = ConnMode.HOTSPOT,
     val password: String = "",
     val isEdit: Boolean = false,
@@ -87,8 +87,6 @@ class DeviceEditViewModel(private val repo: DashdownRepository, private val devi
   fun onWifiIp(v: String) = _state.update { it.copy(wifiIp = v) }
 
   fun onPort(v: String) = _state.update { it.copy(port = v.filter(Char::isDigit)) }
-
-  fun onMode(mode: ConnMode) = _state.update { it.copy(activeMode = mode) }
 
   fun onPassword(v: String) = _state.update { it.copy(password = v) }
 

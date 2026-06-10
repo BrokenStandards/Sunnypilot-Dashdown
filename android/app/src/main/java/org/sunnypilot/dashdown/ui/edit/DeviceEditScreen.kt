@@ -16,11 +16,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -36,7 +34,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import org.sunnypilot.dashdown.ui.rememberRepository
-import uniffi.dashdown_core.ConnMode
 
 @Composable
 fun DeviceEditRoute(deviceId: Long?, onDone: () -> Unit) {
@@ -52,7 +49,6 @@ fun DeviceEditRoute(deviceId: Long?, onDone: () -> Unit) {
       onHotspotIp = vm::onHotspotIp,
       onWifiIp = vm::onWifiIp,
       onPort = vm::onPort,
-      onMode = vm::onMode,
       onPassword = vm::onPassword,
       onSave = vm::save,
       onBack = onDone,
@@ -67,7 +63,6 @@ fun DeviceEditScreen(
     onHotspotIp: (String) -> Unit,
     onWifiIp: (String) -> Unit,
     onPort: (String) -> Unit,
-    onMode: (ConnMode) -> Unit,
     onPassword: (String) -> Unit,
     onSave: () -> Unit,
     onBack: () -> Unit,
@@ -105,26 +100,10 @@ fun DeviceEditScreen(
               singleLine = true,
               modifier = Modifier.fillMaxWidth().testTag("device_form_dongle"),
           )
-          SingleChoiceSegmentedButtonRow(modifier = Modifier.testTag("device_form_mode_toggle")) {
-            SegmentedButton(
-                selected = state.activeMode == ConnMode.HOTSPOT,
-                onClick = { onMode(ConnMode.HOTSPOT) },
-                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
-            ) {
-              Text("Hotspot")
-            }
-            SegmentedButton(
-                selected = state.activeMode == ConnMode.WIFI,
-                onClick = { onMode(ConnMode.WIFI) },
-                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
-            ) {
-              Text("Wi-Fi")
-            }
-          }
           OutlinedTextField(
               value = state.hotspotIp,
               onValueChange = onHotspotIp,
-              label = { Text("Hotspot IP") },
+              label = { Text("Hotspot IP (comma's own Wi-Fi)") },
               singleLine = true,
               isError = state.hotspotIp.isBlank(),
               modifier = Modifier.fillMaxWidth().testTag("device_form_hotspot_ip"),
@@ -132,9 +111,14 @@ fun DeviceEditScreen(
           OutlinedTextField(
               value = state.wifiIp,
               onValueChange = onWifiIp,
-              label = { Text("Wi-Fi IP (optional)") },
+              label = { Text("Home/Wi-Fi IP (optional)") },
               singleLine = true,
               modifier = Modifier.fillMaxWidth().testTag("device_form_wifi_ip"),
+          )
+          Text(
+              "Both IPs are tried automatically over HTTPS — no need to switch modes.",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
           OutlinedTextField(
               value = state.port,

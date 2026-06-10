@@ -10,6 +10,7 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::{CoreError, Result};
+use crate::identity::DeviceIdentity;
 use crate::model::{
     ConnMode, Device, Drive, FileKind, FileSelection, JobState, Segment, SegmentFile, SegmentName,
     SyncStatus,
@@ -156,6 +157,65 @@ impl Repo {
     pub fn delete_device(&self, id: i64) -> Result<()> {
         let conn = self.conn()?;
         conn.execute("DELETE FROM device WHERE id=?1", params![id])?;
+        Ok(())
+    }
+
+    // ---- device identity (B1) ---------------------------------------------
+
+    /// The pinned transport identity (hostname + last leaf cert fingerprint), or
+    /// `None` if this device has never been contacted/pinned.
+    pub fn get_device_identity(&self, device_id: i64) -> Result<Option<DeviceIdentity>> {
+        let conn = self.conn()?;
+        let row = conn
+            .query_row(
+                "SELECT hostname, cert_sha256 FROM device_identity WHERE device_id=?1",
+                params![device_id],
+                |r| {
+                    Ok(DeviceIdentity {
+                        hostname: r.get(0)?,
+                        cert_sha256: r.get(1)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Upsert the pinned identity (hostname + cert fingerprint), preserving any
+    /// stored `last_good_base`.
+    pub fn set_device_identity(&self, device_id: i64, id: &DeviceIdentity) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO device_identity (device_id, hostname, cert_sha256) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(device_id) DO UPDATE SET hostname=excluded.hostname, \
+                cert_sha256=excluded.cert_sha256",
+            params![device_id, id.hostname, id.cert_sha256],
+        )?;
+        Ok(())
+    }
+
+    /// The base URL (`scheme://ip:port/`) that last worked for this device.
+    pub fn get_last_good_base(&self, device_id: i64) -> Result<Option<String>> {
+        let conn = self.conn()?;
+        let v = conn
+            .query_row(
+                "SELECT last_good_base FROM device_identity WHERE device_id=?1",
+                params![device_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(v)
+    }
+
+    /// Remember the base URL that just resolved, so it's tried first next time.
+    pub fn set_last_good_base(&self, device_id: i64, base: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO device_identity (device_id, last_good_base) VALUES (?1, ?2) \
+             ON CONFLICT(device_id) DO UPDATE SET last_good_base=excluded.last_good_base",
+            params![device_id, base],
+        )?;
         Ok(())
     }
 

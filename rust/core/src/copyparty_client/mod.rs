@@ -4,20 +4,27 @@
 pub mod auth;
 pub mod download;
 pub mod listing;
+pub mod pinning;
 
 pub use auth::Credentials;
 pub use listing::{DirListing, Entry};
+
+use std::sync::{Arc, Mutex};
 
 use url::Url;
 
 use crate::error::{CoreError, Result};
 use crate::model::{FileKind, Segment, SegmentFile, SegmentName};
+use pinning::CertCapture;
 
 /// A client bound to one copyparty base URL + credentials.
 pub struct CopypartyClient {
     base: Url,
     creds: Credentials,
     http: reqwest::Client,
+    /// The most-recent leaf TLS fingerprint seen by this client's verifier
+    /// (populated on HTTPS handshakes; stays `None` over plain HTTP).
+    cert_capture: CertCapture,
 }
 
 impl CopypartyClient {
@@ -26,18 +33,58 @@ impl CopypartyClient {
         // (`rustls-no-provider`), so a process default must be installed before
         // the first client build or `build()` fails. Idempotent.
         crate::tls::ensure_crypto_provider();
+        // A TOFU verifier that accepts the comma's self-signed cert and records
+        // its fingerprint (the trust decision is made in `crate::identity`).
+        let cert_capture: CertCapture = Arc::new(Mutex::new(None));
+        let tls = pinning::pinning_client_config(cert_capture.clone());
         // Devices are on the LAN (hotspot/wifi IPs); never route via a proxy.
-        let http = reqwest::Client::builder().no_proxy().build()?;
-        Self::with_client(base_url, creds, http)
+        let http = reqwest::Client::builder()
+            .no_proxy()
+            .use_preconfigured_tls(tls)
+            .build()?;
+        Ok(Self {
+            base: normalize_base(base_url)?,
+            creds,
+            http,
+            cert_capture,
+        })
     }
 
-    /// Construct with a caller-provided `reqwest::Client` (e.g. for tests).
+    /// Construct with a caller-provided `reqwest::Client` (e.g. for tests). No
+    /// fingerprint capture (the provided client owns its own TLS config).
     pub fn with_client(base_url: &str, creds: Credentials, http: reqwest::Client) -> Result<Self> {
         Ok(Self {
             base: normalize_base(base_url)?,
             creds,
             http,
+            cert_capture: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// The leaf TLS fingerprint (hex SHA-256) seen on the most recent HTTPS
+    /// handshake, or `None` if no HTTPS request has been made (e.g. plain HTTP).
+    pub fn last_cert_sha256(&self) -> Option<String> {
+        self.cert_capture
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(pinning::hex_sha256)
+    }
+
+    /// Fetch the base directory as **HTML** (no `?ls=j`) so the caller can read
+    /// the copyparty `srv_info` hostname for identity. Also primes the cert
+    /// capture as a side effect of the HTTPS handshake.
+    pub async fn fetch_root_html(&self) -> Result<String> {
+        let resp = auth::apply_auth(self.http.get(self.base.clone()), &self.creds)
+            .send()
+            .await?;
+        check_status(&resp)?;
+        Ok(resp.text().await?)
+    }
+
+    /// This client's base URL (scheme + host + port), e.g. `https://10.0.0.5:8080/`.
+    pub fn base_url(&self) -> &str {
+        self.base.as_str()
     }
 
     fn url_for(&self, rel: &str) -> Result<Url> {

@@ -25,12 +25,14 @@ tokio-util = "0.7.18"
 zip = "8.6.0"
 tracing-subscriber = { version = "0.3.23", features = ["registry"] }
 rustls = { version = "0.23.40", default-features = false, features = ["ring", "tls12", "logging", "std"] }
+sha2 = "0.10.9"
 
 [dev-dependencies]
 mock-copyparty = { path = "../mock-copyparty" }
 proptest = "1.11.0"
 rcgen = "0.14.8"
+sha2 = "0.10.9"
 tempfile = "3.27.0"
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
 wiremock = "0.6.5"

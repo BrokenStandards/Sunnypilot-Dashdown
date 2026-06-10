@@ -7,9 +7,10 @@ use rusqlite::{params, Connection};
 use crate::error::Result;
 
 const MIGRATIONS: &[&str] = &[
-    include_str!("schema.sql"),       // v1: device, segment, seg_file
-    include_str!("schema_drive.sql"), // v2: drive (M2)
-    include_str!("schema_job.sql"),   // v3: download_job (M4)
+    include_str!("schema.sql"),          // v1: device, segment, seg_file
+    include_str!("schema_drive.sql"),    // v2: drive (M2)
+    include_str!("schema_job.sql"),      // v3: download_job (M4)
+    include_str!("schema_identity.sql"), // v4: device_identity (B1)
 ];
 
 pub const LATEST_VERSION: i64 = MIGRATIONS.len() as i64;
