@@ -25,7 +25,6 @@ class DeviceEditScreenTest {
             onHotspotIp = {},
             onWifiIp = {},
             onPort = {},
-            onMode = {},
             onPassword = {},
             onSave = {},
             onBack = {},
@@ -39,8 +38,8 @@ class DeviceEditScreenTest {
     render(DeviceEditState())
     rule.onNodeWithTag("device_form_name").assertExists()
     rule.onNodeWithTag("device_form_hotspot_ip").assertExists()
+    rule.onNodeWithTag("device_form_wifi_ip").assertExists()
     rule.onNodeWithTag("device_form_port").assertExists()
-    rule.onNodeWithTag("device_form_mode_toggle").assertExists()
     rule.onNodeWithTag("device_form_save").assertExists()
   }
 

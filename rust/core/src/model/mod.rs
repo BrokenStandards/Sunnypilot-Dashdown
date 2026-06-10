@@ -359,6 +359,9 @@ pub struct Device {
 impl Device {
     /// The IP currently in use, based on `active_mode`. Falls back to the
     /// hotspot IP if wifi is selected but unset.
+    ///
+    /// `active_mode` no longer drives routing (the resolver auto-probes every
+    /// [`candidate_ips`](Self::candidate_ips)); this remains for display/back-compat.
     pub fn active_ip(&self) -> &str {
         match self.active_mode {
             ConnMode::Wifi => self.wifi_ip.as_deref().unwrap_or(&self.hotspot_ip),
@@ -366,9 +369,31 @@ impl Device {
         }
     }
 
-    /// Base copyparty URL for the active connection, e.g. `http://192.168.43.1:3923/`.
+    /// Every IP this device might answer on — hotspot (comma-hosted AP) and the
+    /// optional Wi-Fi/home IP — deduped, in probe order. The sync engine tries
+    /// each (preferring a remembered `last_good` base first) without a manual
+    /// mode switch.
+    pub fn candidate_ips(&self) -> Vec<&str> {
+        let mut ips = vec![self.hotspot_ip.as_str()];
+        if let Some(w) = self.wifi_ip.as_deref() {
+            if w != self.hotspot_ip {
+                ips.push(w);
+            }
+        }
+        ips
+    }
+
+    /// A copyparty base URL for an explicit scheme + IP, e.g.
+    /// `https://192.168.43.1:8080/`.
+    pub fn base_for(&self, scheme: &str, ip: &str) -> String {
+        format!("{scheme}://{ip}:{}/", self.port)
+    }
+
+    /// Base copyparty URL for the active IP. HTTPS-preferred (copyparty serves
+    /// both on the same port); the resolver falls back to HTTP for non-TLS
+    /// servers. Retained for callers/tests that want a single URL.
     pub fn base_url(&self) -> String {
-        format!("http://{}:{}/", self.active_ip(), self.port)
+        self.base_for("https", self.active_ip())
     }
 }
 

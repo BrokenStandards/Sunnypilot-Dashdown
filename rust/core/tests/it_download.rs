@@ -15,7 +15,7 @@ use dashdown_core::sync_engine::{
     SyncEngine,
 };
 use mock_copyparty::{fixtures, MockServer};
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer as WireServer, ResponseTemplate};
 
 const ROUTE: &str = "000001a3--c20ba54385";
@@ -285,9 +285,17 @@ async fn previews_only_downloads_qcamera_only() {
 
 #[tokio::test]
 async fn cancel_mid_download_stops_the_job() {
-    // Seed the index directly so the test only needs a (delayed) file endpoint.
+    // Seed the index directly. The resolver lists `routes/` for liveness, so
+    // answer that fast and delay only the actual file transfer (the cancellable
+    // part) — mirroring a real server (listings are quick, the big file is slow).
     let server = WireServer::start().await;
     Mock::given(method("GET"))
+        .and(path("/routes/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"dirs":[],"files":[]}"#))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"qcamera\.ts$"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_bytes(vec![0u8; 1200])

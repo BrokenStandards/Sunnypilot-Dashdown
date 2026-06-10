@@ -96,12 +96,90 @@ impl SyncEngine {
         &self.mirror_root
     }
 
-    fn client_for(device: &Device) -> Result<CopypartyClient> {
-        let creds = match &device.password {
+    fn creds_for(device: &Device) -> Credentials {
+        match &device.password {
             Some(p) => Credentials::Password(p.clone()),
             None => Credentials::Anonymous,
-        };
-        CopypartyClient::new(&device.base_url(), creds)
+        }
+    }
+
+    /// Resolve a usable client for `device` without a manual mode switch: try the
+    /// remembered-good base first, then every candidate IP over **HTTPS**
+    /// (preferred) then HTTP, picking the first that responds as copyparty **and**
+    /// matches the pinned identity (hostname). Persists the working base and
+    /// (re)pins the identity. Real devices use HTTPS (copyparty serves it on the
+    /// same port); HTTP is a fallback for non-TLS servers (e.g. the test mock).
+    /// A reachable endpoint with a *different* hostname is skipped (it's not this
+    /// device); unreachable bases are skipped too.
+    async fn resolve(&self, device: &Device) -> Result<CopypartyClient> {
+        let creds = Self::creds_for(device);
+        let device_id = device.id;
+
+        let mut bases: Vec<String> = Vec::new();
+        if let Some(lg) = db(self.repo.clone(), move |r| r.get_last_good_base(device_id)).await? {
+            bases.push(lg);
+        }
+        for ip in device.candidate_ips() {
+            bases.push(device.base_for("https", ip));
+            bases.push(device.base_for("http", ip));
+        }
+        bases.dedup();
+
+        let stored = db(self.repo.clone(), move |r| r.get_device_identity(device_id)).await?;
+
+        // A definitive identity mismatch (a reachable but *wrong* device) takes
+        // precedence over mere connection failures on other candidates.
+        let mut mismatch: Option<CoreError> = None;
+        let mut last_err: Option<CoreError> = None;
+        for base in bases {
+            let client = match CopypartyClient::new(&base, creds.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    last_err = Some(e);
+                    continue;
+                }
+            };
+            // Liveness: the realdata listing is the same call `sync_now` makes,
+            // and works over HTTP or HTTPS (the HTTPS handshake also primes the
+            // cert capture).
+            if let Err(e) = client.list_dir(REALDATA_REL).await {
+                last_err = Some(e);
+                continue;
+            }
+            // Best-effort identity: the copyparty hostname from the HTML root
+            // (absent on minimal servers → unpinned) + the captured leaf fp.
+            let hostname = client
+                .fetch_root_html()
+                .await
+                .ok()
+                .and_then(|h| crate::identity::parse_hostname(&h));
+            let observed = crate::identity::DeviceIdentity {
+                hostname,
+                cert_sha256: client.last_cert_sha256(),
+            };
+            match crate::identity::decide(stored.as_ref(), &observed) {
+                crate::identity::IdentityVerdict::Mismatch { pinned, seen } => {
+                    mismatch = Some(CoreError::IdentityMismatch(format!(
+                        "expected {pinned}, saw {seen} at {base}"
+                    )));
+                    continue;
+                }
+                crate::identity::IdentityVerdict::Ok { repin } => {
+                    let base_to_save = base.clone();
+                    db(self.repo.clone(), move |r| {
+                        if let Some(p) = repin {
+                            r.set_device_identity(device_id, &p)?;
+                        }
+                        r.set_last_good_base(device_id, &base_to_save)
+                    })
+                    .await?;
+                    return Ok(client);
+                }
+            }
+        }
+        Err(mismatch.or(last_err).unwrap_or_else(|| {
+            CoreError::Unreachable(format!("device {device_id}: no candidate IP"))
+        }))
     }
 
     fn mirror_for(&self, device: &Device) -> MirrorStore {
@@ -112,7 +190,7 @@ impl SyncEngine {
     /// drives, then reclassify each drive's `sync_state` from disk. Does NOT
     /// download. Returns the device's drives (hydrated, with correct sync state).
     pub async fn sync_now(&self, device: &Device) -> Result<Vec<Drive>> {
-        let client = Self::client_for(device)?;
+        let client = self.resolve(device).await?;
         let segments = client.list_segments(REALDATA_REL).await?;
 
         let device_id = device.id;
@@ -212,12 +290,18 @@ impl SyncEngine {
     /// downloading" contract). A job left `running` by a crashed process reads as
     /// `Blue` until the next `reconcile`/`sync_now` reclaims it (self-healing).
     pub async fn check_connectivity(&self, device: &Device) -> Result<DeviceConnectivity> {
-        let reachable = connectivity::tcp_reachable(
-            device.active_ip(),
-            device.port,
-            connectivity::DEFAULT_CONNECT_TIMEOUT,
-        )
-        .await;
+        // Reachable if ANY of the device's IPs (hotspot / home Wi-Fi) answers —
+        // the resolver auto-picks among them, so the dot reflects "can I reach
+        // this device at all", not one hardcoded mode.
+        let mut reachable = false;
+        for ip in device.candidate_ips() {
+            if connectivity::tcp_reachable(ip, device.port, connectivity::DEFAULT_CONNECT_TIMEOUT)
+                .await
+            {
+                reachable = true;
+                break;
+            }
+        }
         if !reachable {
             return Ok(DeviceConnectivity {
                 dot: ConnDot::Red,
@@ -266,7 +350,7 @@ impl SyncEngine {
         sink: Arc<dyn ProgressSink>,
         cancel: CancellationToken,
     ) -> Result<JobOutcome> {
-        let client = Self::client_for(device)?;
+        let client = self.resolve(device).await?;
         let mirror = self.mirror_for(device);
         let device_id = device.id;
         let selection = device.file_selection;

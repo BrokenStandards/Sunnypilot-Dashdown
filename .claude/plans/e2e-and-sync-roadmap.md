@@ -62,15 +62,29 @@ interactive runs). **Self-tests:** extend `it_mock_harness.rs` / `it_mcp.rs`. Pr
 **To research in its plan:** exact `MockServer`/supervisor wiring, control-endpoint shape, DRY
 between the HTTP and MCP adapters.
 
-### Phase B — Background sync engine (the corrected core)
+### Phase B1 — Transport & identity (foundation)
+**Goal:** connect/sync over whichever device IP is up (comma hotspot *or* home/phone Wi-Fi) without
+a manual mode switch, over **HTTPS**, verifying it's the **same comma**. **Scope:** multi-IP
+auto-resolution (`candidate_ips` + `last_good_ip`), HTTPS with a custom rustls verifier (accept
+self-signed, capture leaf SHA-256), device identity = copyparty **hostname** (`comma-…`, read from
+the HTML `srv_info`) as the stable anchor with TOFU cert-pinning tolerated to rotate when the
+hostname matches; new internal `device_identity` table. Extend `mock-copyparty` with a TLS mode +
+HTML `srv_info`. Drop the manual mode toggle in the device-edit UI. **Decided:** reachability-gated
+(not Wi-Fi/unmetered-only — transfers are local). **Self-tests:** Rust unit (verifier, hostname
+parse, identity decision) + integration over the TLS mock (cert rotation tolerated, hostname
+mismatch rejected, multi-IP failover). Prerequisite for B2/C/D/E.
+
+### Phase B2 — Background sync scheduler (the corrected core)
 **Goal:** automatic and manual downloads run in the background with no app open; new drives/segments
-on a connected device are picked up promptly. **Scope:** evolve `AutoSyncWorker` / `DownloadService`
-so manual downloads survive app close and auto-sync is responsive (not a flat 6-hour timer).
-**Key decision to research in its plan:** what makes background pickup of a new segment timely and
-battery-sane — periodic + expedited work, a connectivity/network trigger that fires when the phone
-joins the Comma's hotspot, and/or a foreground service that syncs while connected — within Android
-background-execution limits. **Self-tests:** instrumented worker/service tests driving Phase A's
-`add_segment`/`add_drive` (covers "automatic downloads" and "segment added → synced", app closed).
+on a connected device are picked up promptly. **Decided trigger (hybrid):** a 15-min periodic
+backstop **plus** a connectivity-triggered job that starts a foreground sync **session** within
+seconds of reaching the device; each session loops sync→download for new/partial drives until the
+device is unreachable or work drains; long drives continue across ticks via resume. Reachability-
+gated via B1 (drop the `UNMETERED` constraint). Manual downloads already survive app close
+(foreground `DownloadService`). **Scope:** rework `AutoSyncWorker` (interval, constraints, in-session
+loop) + a connectivity-triggered one-time worker. **Self-tests:** instrumented worker tests driving
+Phase A's `add_segment`/`add_drive` (covers "automatic downloads" and "segment added → synced", app
+closed).
 
 ### Phase C — Foreground live UI refresh (status only)
 **Goal:** while a screen is open, the connectivity dot and the drive list update on their own.
@@ -101,17 +115,18 @@ read-only — download one smallest drive, play, star, never delete/reconfigure)
 
 | Requested scenario | Phase(s) |
 |---|---|
+| Multi-IP auto-connect + HTTPS + same-device identity | B1 |
 | Empty state | E (Maestro, mock + real-hw) |
-| Manual download (survives app close) | B (background) + E (Maestro) |
-| Automatic downloads (background, no app open) | B |
-| Segment added to active drive → synced (background) | A + B |
+| Manual download (survives app close) | B2 (already foreground) + E (Maestro) |
+| Automatic downloads (background, no app open) | B1 + B2 |
+| Segment added to active drive → synced (background) | A + B1 + B2 |
 | Clearing older downloads over threshold | D |
 | Retention of starred downloads | D |
-| Auto-refresh red/green on server stop/start | A + C |
+| Auto-refresh red/green on server stop/start | A + B1 + C |
 | Drive list add/remove on load + polling (no manual refresh) | A + C |
 
 ## Out of scope / risks
 - No remote deletion from the Comma (read-only mount; `auto_delete_from_comma` stays a stub).
 - Background-execution limits (Doze, background-start restrictions, foreground-service types) are the
-  central risk for Phase B and will be researched there before committing to a mechanism.
+  central risk for Phase B2 and will be researched there before committing to a mechanism.
 - Foreground polling is foreground-only and lifecycle-cancelled; network-poll cadence tuned in C.

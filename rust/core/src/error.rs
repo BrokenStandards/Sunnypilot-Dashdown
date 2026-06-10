@@ -27,6 +27,15 @@ pub enum CoreError {
     #[error("not found: {0}")]
     NotFound(String),
 
+    /// No candidate IP/scheme for a device answered as copyparty.
+    #[error("device unreachable: {0}")]
+    Unreachable(String),
+
+    /// A reachable endpoint identified as a *different* device (hostname pin
+    /// mismatch) — refuse to sync to it.
+    #[error("identity mismatch: {0}")]
+    IdentityMismatch(String),
+
     #[error("parse error: {0}")]
     Parse(String),
 
