@@ -162,9 +162,9 @@ fun DriveDetailScreen(
                   )
                 }
 
-                if (state.playablePaths.isNotEmpty() || state.hdCameras.isNotEmpty()) {
+                if (state.qcamera.isNotEmpty() || state.hdCameras.isNotEmpty()) {
                   MultiCamPlayer(
-                      qcameraPaths = state.playablePaths,
+                      qcamera = state.qcamera,
                       hdCameras = state.hdCameras,
                       resolveHd = resolveHd,
                       modifier = Modifier.fillMaxWidth(),
