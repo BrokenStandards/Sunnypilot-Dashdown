@@ -41,6 +41,8 @@ class ConnectivityLiveTest {
           retentionMaxMinutes = null,
           autoDeleteFromComma = false,
           autoDeleteMinAgeMin = 60,
+          capWarnEnabled = true,
+          capWarnThresholdMinutes = 10,
       )
 
   @Test

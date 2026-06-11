@@ -76,4 +76,6 @@ internal fun autoSyncDevice(name: String, port: String): Device =
         retentionMaxMinutes = null,
         autoDeleteFromComma = false,
         autoDeleteMinAgeMin = 60,
+        capWarnEnabled = true,
+        capWarnThresholdMinutes = 10,
     )

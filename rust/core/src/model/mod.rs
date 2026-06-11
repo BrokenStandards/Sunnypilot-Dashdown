@@ -354,6 +354,10 @@ pub struct Device {
     pub retention_max_minutes: Option<i64>,
     pub auto_delete_from_comma: bool,
     pub auto_delete_min_age_min: i64,
+    /// Post the low-headroom storage warning when footage nears the retention cap.
+    pub cap_warn_enabled: bool,
+    /// Warn once non-preserved local footage is within this many minutes of the cap.
+    pub cap_warn_threshold_minutes: i64,
 }
 
 impl Device {

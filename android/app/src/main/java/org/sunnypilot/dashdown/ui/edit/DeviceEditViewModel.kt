@@ -138,6 +138,8 @@ class DeviceEditViewModel(private val repo: DashdownRepository, private val devi
                     retentionMaxMinutes = null,
                     autoDeleteFromComma = false,
                     autoDeleteMinAgeMin = 60,
+                    capWarnEnabled = true,
+                    capWarnThresholdMinutes = 10,
                 ))
         val detected =
             if (s.dongleLabel.isBlank()) {

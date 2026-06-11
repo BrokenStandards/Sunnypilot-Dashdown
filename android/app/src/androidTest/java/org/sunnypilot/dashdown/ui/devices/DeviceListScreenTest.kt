@@ -36,6 +36,8 @@ class DeviceListScreenTest {
           retentionMaxMinutes = null,
           autoDeleteFromComma = false,
           autoDeleteMinAgeMin = 0L,
+          capWarnEnabled = true,
+          capWarnThresholdMinutes = 10,
       )
 
   @Test

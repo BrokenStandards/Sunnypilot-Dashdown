@@ -77,6 +77,8 @@ class RetentionLiveTest {
               retentionMaxMinutes = 3,
               autoDeleteFromComma = false,
               autoDeleteMinAgeMin = 60,
+              capWarnEnabled = true,
+              capWarnThresholdMinutes = 10,
           ),
       )
       Maintenance.sweep(app, repo, repo.listDevices().first { it.id == id }) // local, no network

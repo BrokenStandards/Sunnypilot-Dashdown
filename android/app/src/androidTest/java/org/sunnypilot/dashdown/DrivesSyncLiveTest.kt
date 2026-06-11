@@ -54,6 +54,8 @@ class DrivesSyncLiveTest {
                 retentionMaxMinutes = null,
                 autoDeleteFromComma = false,
                 autoDeleteMinAgeMin = 60,
+                capWarnEnabled = true,
+                capWarnThresholdMinutes = 10,
             ))
     try {
       val drives = repo.listDrives(device.id, offline = false) // network sync_now

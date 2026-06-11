@@ -17,28 +17,51 @@ import uniffi.dashdown_core.RetentionStatus
  * [SyncSessionWorker] (right after a download grows the mirror). Touches no network.
  */
 object Maintenance {
-  /** Warn once the non-preserved local footage is within this many minutes of the budget. */
+  /** Default headroom threshold (minutes) for a device that predates the setting. */
   const val WARN_HEADROOM_MIN = 10L
+  /** Re-alert at most once per device per this interval (a hard floor on re-notifying). */
+  const val MIN_NOTIFY_INTERVAL_MS = 24L * 60 * 60 * 1000
   private const val CHANNEL = "storage_warn"
   private const val NOTIF_BASE = 3000
+  /** Per-device last-notified epoch-millis store (notification dedup only, not domain state). */
+  private const val PREFS = "cap_warn"
 
-  /** Run clear-down for [device], then post/cancel its low-headroom warning. */
+  /**
+   * Run clear-down for [device], then post/cancel its low-headroom warning per the device's
+   * settings — gated so it re-alerts at most once per [MIN_NOTIFY_INTERVAL_MS] (a day) per device.
+   */
   suspend fun sweep(context: Context, repo: DashdownRepository, device: Device) {
     runCatching { repo.runMaintenance(device.id) }
     val status = runCatching { repo.retentionStatus(device.id) }.getOrNull() ?: return
-    if (shouldWarn(status, WARN_HEADROOM_MIN)) warn(context, device, headroom(status))
-    else cancel(context, device.id)
+    val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    val key = device.id.toString()
+    if (shouldWarn(status, device.capWarnEnabled, device.capWarnThresholdMinutes)) {
+      val now = System.currentTimeMillis()
+      if (dueForNotification(prefs.getLong(key, 0L), now)) {
+        warn(context, device, headroom(status))
+        prefs.edit().putLong(key, now).apply()
+      } // else: already alerted within the interval — leave the existing notification as-is.
+    } else {
+      cancel(context, device.id)
+      prefs.edit().remove(key).apply() // reset so the next genuine crossing alerts immediately
+    }
   }
 
   /**
-   * Warn when a budget is set and the **non-preserved** local footage is within [threshold] minutes
-   * of it — i.e. the next few minutes of recording will start auto-deleting older segments. Starred
-   * (preserved) footage doesn't count toward the budget, so it's subtracted out.
+   * Warn when the warning is [enabled], a budget is set, and the **non-preserved** local footage is
+   * within [threshold] minutes of it — i.e. the next few minutes of recording will start
+   * auto-deleting older segments. Starred (preserved) footage doesn't count, so it's subtracted
+   * out.
    */
-  fun shouldWarn(s: RetentionStatus, threshold: Long): Boolean {
+  fun shouldWarn(s: RetentionStatus, enabled: Boolean, threshold: Long): Boolean {
+    if (!enabled) return false
     val budget = s.budgetMinutes ?: return false
     return budget - (s.localMinutes - s.preservedMinutes) < threshold
   }
+
+  /** True when at least [MIN_NOTIFY_INTERVAL_MS] has elapsed since the last alert ([lastMs]). */
+  fun dueForNotification(lastMs: Long, nowMs: Long): Boolean =
+      nowMs - lastMs >= MIN_NOTIFY_INTERVAL_MS
 
   private fun headroom(s: RetentionStatus): Long =
       ((s.budgetMinutes ?: 0L) - (s.localMinutes - s.preservedMinutes)).coerceAtLeast(0L)
