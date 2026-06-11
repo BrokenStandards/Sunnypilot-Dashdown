@@ -83,28 +83,5 @@ fun visibleSlots(enabled: Set<CameraId>): List<VideoSlot> {
   return hd.ifEmpty { listOf(VideoSlot.QcamVideo) }
 }
 
-/**
- * How the enabled tiles are laid out. The composable renders each plan with nested rows/columns;
- * this stays a pure value so the mapping is testable. `PRIMARY_*` give the first (primary) tile
- * extra area with the rest stacked beside/under it.
- */
-enum class TilePlan {
-  SINGLE, // 1 tile, full area
-  STACK2, // 2 tiles, vertically stacked (portrait)
-  ROW2, // 2 tiles, side by side (landscape)
-  PRIMARY_BOTTOM2, // 3 tiles: primary on top, two below (portrait)
-  PRIMARY_RIGHT2, // 3 tiles: primary on left, two stacked on the right (landscape)
-  GRID4, // 4 tiles, 2x2
-}
-
-/**
- * Pick the tile arrangement for `n` enabled tiles in the given orientation. `n` is clamped to 1..4
- * (there are at most road/wide/driver + qcamera).
- */
-fun tilePlan(n: Int, landscape: Boolean): TilePlan =
-    when (n.coerceIn(1, 4)) {
-      1 -> TilePlan.SINGLE
-      2 -> if (landscape) TilePlan.ROW2 else TilePlan.STACK2
-      3 -> if (landscape) TilePlan.PRIMARY_RIGHT2 else TilePlan.PRIMARY_BOTTOM2
-      else -> TilePlan.GRID4
-    }
+// Tile arrangement now lives in TileLayout.kt (`planTiles`), which sizes each tile from the video
+// aspect ratio and the device's available space instead of a fixed per-count plan.

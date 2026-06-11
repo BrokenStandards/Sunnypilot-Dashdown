@@ -172,6 +172,44 @@ ANDROID_SERIAL=192.168.1.210:5555 tools/run-maestro-e2e.sh all IP=192.168.1.100 
 Args: `[TARGET] [MODE=mock|real] [IP=…] [PORT=…] [NAME=…]`. Env knobs: `MOCK_PORT` (8099),
 `CONTROL_PORT` (8098), `FIXTURE` (single_drive).
 
+### Emulator runbook — boot → run → monitor → cleanup
+
+The full chain against the `dashdown-b0` (api-35) AVD, headless. The harness builds the APK + mock,
+starts `mock-copyparty`, `adb reverse`s both ports, installs, runs the flows, and **on exit kills the
+mock + removes the reverses** (trap cleanup) — so the only manual teardown is the emulator itself.
+
+```bash
+# 1. Boot the emulator headless. QT_QPA_PLATFORM=offscreen is MANDATORY — the shell inherits
+#    =wayland with no real display, so even -no-window aborts on a Qt plugin error without it.
+nohup env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=offscreen ANDROID_SDK_ROOT=/opt/android-sdk \
+  /opt/android-sdk/emulator/emulator -avd dashdown-b0 -no-window -no-audio \
+  -no-snapshot-save -no-boot-anim -gpu swiftshader_indirect -netdelay none -netspeed full \
+  >/tmp/emu.log 2>&1 &
+
+# 2. Wait for boot to finish (it comes up as emulator-5554).
+adb -s emulator-5554 wait-for-device
+until [ "$(adb -s emulator-5554 shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; do sleep 2; done
+
+# 3. Run the suite, targeting the emulator EXPLICITLY (a real Pixel may also be on adb — never let the
+#    harness pick "first device"). `tee` keeps a log for monitoring/inspection.
+ANDROID_SERIAL=emulator-5554 tools/run-maestro-e2e.sh all 2>&1 | tee /tmp/maestro.log
+#    …or one flow:  ANDROID_SERIAL=emulator-5554 tools/run-maestro-e2e.sh connectivity_refresh_mock
+
+# 4a. MONITOR per step (live) — Maestro streams every command; this trims the gradle noise to just
+#     flow boundaries + per-step verdicts. Run in a second shell, or after backgrounding step 3.
+tail -f /tmp/maestro.log | grep --line-buffered -E '==> flow:|\.\.\. (COMPLETED|FAILED|WARNED)|^    (PASS|FAIL)'
+
+# 4b. MONITOR just-on-end — the per-flow verdicts + final tally (the harness exits non-zero on any fail):
+grep -E '^==> flow:|^    (PASS|FAIL)|^==> all|flow\(s\) FAILED' /tmp/maestro.log
+
+# 5. Cleanup — kill the emulator (the harness already killed the mock + removed the adb reverses).
+adb -s emulator-5554 emu kill
+```
+
+To watch per-step while the run proceeds unattended, background step 3 (`… >/tmp/maestro.log 2>&1 &`)
+and use the step-**4a** `tail -f` in another shell; the step-**4b** grep then gives the summary once
+`==> all N flow(s) passed` (or `flow(s) FAILED`) lands.
+
 ### Flows (`android/maestro/`)
 
 | Flow | Targets | Asserts |

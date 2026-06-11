@@ -32,6 +32,18 @@ public class MultiRenderersFactory extends DefaultRenderersFactory {
   public static final class TileStats {
     /** True once this renderer has rendered a frame; cleared when it is disabled (track deselected). */
     public volatile boolean firstFrameRendered;
+    /** This renderer's decoded video size + pixel aspect, for letterboxing the tile (0 until known). */
+    public volatile int videoWidth;
+    public volatile int videoHeight;
+    public volatile float pixelWidthHeightRatio = 1f;
+
+    /** Display aspect (w/h) honoring non-square pixels, or 0 if not yet reported. */
+    public float displayAspect() {
+      if (videoWidth <= 0 || videoHeight <= 0) {
+        return 0f;
+      }
+      return (videoWidth * pixelWidthHeightRatio) / videoHeight;
+    }
   }
 
   private final int videoRendererCount;
@@ -69,6 +81,13 @@ public class MultiRenderersFactory extends DefaultRenderersFactory {
             @Override
             public void onRenderedFirstFrame(Object output, long renderTimeMs) {
               s.firstFrameRendered = true;
+            }
+
+            @Override
+            public void onVideoSizeChanged(androidx.media3.common.VideoSize videoSize) {
+              s.videoWidth = videoSize.width;
+              s.videoHeight = videoSize.height;
+              s.pixelWidthHeightRatio = videoSize.pixelWidthHeightRatio;
             }
 
             @Override
