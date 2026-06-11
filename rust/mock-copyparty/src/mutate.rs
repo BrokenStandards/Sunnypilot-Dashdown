@@ -122,7 +122,10 @@ fn set_seg_mtime(root: &Path, seg: &str, mtime_s: i64) -> io::Result<()> {
     for entry in fs::read_dir(root.join(ROUTES).join(seg))? {
         let path = entry?.path();
         if path.is_file() {
-            fs::File::options().write(true).open(&path)?.set_times(times)?;
+            fs::File::options()
+                .write(true)
+                .open(&path)?
+                .set_times(times)?;
         }
     }
     Ok(())

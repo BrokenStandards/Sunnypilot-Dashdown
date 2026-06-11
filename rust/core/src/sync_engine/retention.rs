@@ -104,7 +104,10 @@ mod tests {
 
     #[test]
     fn none_budget_keeps_everything() {
-        let drives = vec![drive("a", &[(0, 1), (1, 2)], false), drive("b", &[(0, 3)], false)];
+        let drives = vec![
+            drive("a", &[(0, 1), (1, 2)], false),
+            drive("b", &[(0, 3)], false),
+        ];
         let w = retention_window(&drives, None);
         assert_eq!(w.len(), 3);
         assert!(w.contains(&r("a", 0)) && w.contains(&r("a", 1)) && w.contains(&r("b", 0)));
@@ -146,7 +149,10 @@ mod tests {
     #[test]
     fn equal_mtime_tiebreak_is_deterministic() {
         // All same mtime → newest-first falls back to route desc, then segment desc.
-        let drives = vec![drive("a", &[(0, 7), (1, 7)], false), drive("b", &[(0, 7)], false)];
+        let drives = vec![
+            drive("a", &[(0, 7), (1, 7)], false),
+            drive("b", &[(0, 7)], false),
+        ];
         let w = retention_window(&drives, Some(2));
         // Order desc: ("b",0), ("a",1), ("a",0) → keep the first two.
         assert!(w.contains(&r("b", 0)) && w.contains(&r("a", 1)));
