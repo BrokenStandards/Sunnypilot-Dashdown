@@ -55,6 +55,8 @@ class ResumeAfterInterruptLiveTest {
                 retentionMaxMinutes = null,
                 autoDeleteFromComma = false,
                 autoDeleteMinAgeMin = 60,
+                capWarnEnabled = true,
+                capWarnThresholdMinutes = 10,
             ))
     try {
       val key = repo.listDrives(device.id, offline = false).first().driveKey

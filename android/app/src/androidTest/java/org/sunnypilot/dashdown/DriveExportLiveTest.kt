@@ -51,6 +51,8 @@ class DriveExportLiveTest {
                 retentionMaxMinutes = null,
                 autoDeleteFromComma = false,
                 autoDeleteMinAgeMin = 60,
+                capWarnEnabled = true,
+                capWarnThresholdMinutes = 10,
             ))
     val temp = File.createTempFile("export", ".zip", app.cacheDir)
     try {

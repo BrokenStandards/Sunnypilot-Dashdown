@@ -36,6 +36,8 @@ fn device(addr: SocketAddr, selection: FileSelection) -> Device {
         retention_max_minutes: None,
         auto_delete_from_comma: false,
         auto_delete_min_age_min: 30,
+        cap_warn_enabled: true,
+        cap_warn_threshold_minutes: 10,
     }
 }
 

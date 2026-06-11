@@ -39,6 +39,8 @@ class DeviceCrudTest {
           retentionMaxMinutes = null,
           autoDeleteFromComma = false,
           autoDeleteMinAgeMin = 60,
+          capWarnEnabled = true,
+          capWarnThresholdMinutes = 10,
       )
 
   @Test
@@ -63,6 +65,8 @@ class DeviceCrudTest {
               retentionMaxMinutes = 120L,
               autoDeleteFromComma = true,
               autoDeleteMinAgeMin = 30L,
+              capWarnEnabled = false,
+              capWarnThresholdMinutes = 25,
           )
       repo.setSettings(added.id, newSettings)
       val got = repo.getSettings(added.id)
@@ -70,6 +74,8 @@ class DeviceCrudTest {
       assertEquals(120L, got.retentionMaxMinutes)
       assertEquals(true, got.autoDeleteFromComma)
       assertEquals(30L, got.autoDeleteMinAgeMin)
+      assertEquals(false, got.capWarnEnabled)
+      assertEquals(25L, got.capWarnThresholdMinutes)
       assertEquals(true, got.fileSelection.fcamera)
       assertEquals(true, got.fileSelection.qcamera)
       assertEquals(false, got.fileSelection.rlog)

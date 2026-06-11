@@ -14,6 +14,10 @@ pub struct DeviceSettings {
     pub retention_max_minutes: Option<i64>,
     pub auto_delete_from_comma: bool,
     pub auto_delete_min_age_min: i64,
+    /// Toggle the low-headroom storage warning.
+    pub cap_warn_enabled: bool,
+    /// Warn once non-preserved local footage is within this many minutes of the cap.
+    pub cap_warn_threshold_minutes: i64,
 }
 
 impl Device {
@@ -25,6 +29,8 @@ impl Device {
             retention_max_minutes: self.retention_max_minutes,
             auto_delete_from_comma: self.auto_delete_from_comma,
             auto_delete_min_age_min: self.auto_delete_min_age_min,
+            cap_warn_enabled: self.cap_warn_enabled,
+            cap_warn_threshold_minutes: self.cap_warn_threshold_minutes,
         }
     }
 
@@ -35,6 +41,8 @@ impl Device {
         self.retention_max_minutes = s.retention_max_minutes;
         self.auto_delete_from_comma = s.auto_delete_from_comma;
         self.auto_delete_min_age_min = s.auto_delete_min_age_min;
+        self.cap_warn_enabled = s.cap_warn_enabled;
+        self.cap_warn_threshold_minutes = s.cap_warn_threshold_minutes;
     }
 }
 
@@ -58,6 +66,8 @@ mod tests {
             retention_max_minutes: None,
             auto_delete_from_comma: false,
             auto_delete_min_age_min: 60,
+            cap_warn_enabled: true,
+            cap_warn_threshold_minutes: 10,
         }
     }
 
@@ -70,6 +80,8 @@ mod tests {
             retention_max_minutes: Some(120),
             auto_delete_from_comma: true,
             auto_delete_min_age_min: 30,
+            cap_warn_enabled: false,
+            cap_warn_threshold_minutes: 25,
         };
         d.apply_settings(new.clone());
         // Settings updated...

@@ -55,6 +55,8 @@ fun DeviceSettingsRoute(deviceId: Long, onDone: () -> Unit) {
       onRetention = vm::onRetention,
       onAutoDelete = vm::onAutoDelete,
       onMinAge = vm::onMinAge,
+      onCapWarnEnabled = vm::onCapWarnEnabled,
+      onCapWarnThreshold = vm::onCapWarnThreshold,
       onSave = vm::save,
       onBack = onDone,
   )
@@ -68,6 +70,8 @@ fun DeviceSettingsScreen(
     onRetention: (String) -> Unit,
     onAutoDelete: (Boolean) -> Unit,
     onMinAge: (String) -> Unit,
+    onCapWarnEnabled: (Boolean) -> Unit,
+    onCapWarnThreshold: (String) -> Unit,
     onSave: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -136,6 +140,21 @@ fun DeviceSettingsScreen(
               },
               style = MaterialTheme.typography.bodySmall,
               modifier = Modifier.testTag("settings_storage_usage"),
+          )
+          SwitchRow(
+              "Warn before older footage is auto-deleted",
+              state.capWarnEnabled,
+              onCapWarnEnabled,
+              "settings_cap_warn",
+          )
+          OutlinedTextField(
+              value = state.capWarnThresholdMinutes,
+              onValueChange = onCapWarnThreshold,
+              label = { Text("When within (minutes)") },
+              singleLine = true,
+              enabled = state.capWarnEnabled,
+              keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+              modifier = Modifier.fillMaxWidth().testTag("settings_cap_warn_threshold"),
           )
 
           HorizontalDivider()

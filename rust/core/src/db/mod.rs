@@ -29,7 +29,7 @@ type PooledConn = r2d2::PooledConnection<SqliteConnectionManager>;
 
 const DEVICE_COLS: &str = "id, name, dongle_label, hotspot_ip, wifi_ip, port, active_mode, \
     password, auto_sync, file_selection, retention_max_minutes, auto_delete_from_comma, \
-    auto_delete_min_age_min";
+    auto_delete_min_age_min, cap_warn_enabled, cap_warn_threshold_minutes";
 
 const DRIVE_COLS: &str = "drive_key, route_id, first_seg, last_seg, start_ms, end_ms, \
     segment_count, recording, preserved, sync_state";
@@ -85,8 +85,9 @@ impl Repo {
         conn.execute(
             "INSERT INTO device (name, dongle_label, hotspot_ip, wifi_ip, port, active_mode, \
                 password, auto_sync, file_selection, retention_max_minutes, \
-                auto_delete_from_comma, auto_delete_min_age_min) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                auto_delete_from_comma, auto_delete_min_age_min, cap_warn_enabled, \
+                cap_warn_threshold_minutes) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             params![
                 d.name,
                 d.dongle_label,
@@ -100,6 +101,8 @@ impl Repo {
                 d.retention_max_minutes,
                 d.auto_delete_from_comma,
                 d.auto_delete_min_age_min,
+                d.cap_warn_enabled,
+                d.cap_warn_threshold_minutes,
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -130,7 +133,8 @@ impl Repo {
         conn.execute(
             "UPDATE device SET name=?2, dongle_label=?3, hotspot_ip=?4, wifi_ip=?5, port=?6, \
                 active_mode=?7, password=?8, auto_sync=?9, file_selection=?10, \
-                retention_max_minutes=?11, auto_delete_from_comma=?12, auto_delete_min_age_min=?13 \
+                retention_max_minutes=?11, auto_delete_from_comma=?12, auto_delete_min_age_min=?13, \
+                cap_warn_enabled=?14, cap_warn_threshold_minutes=?15 \
              WHERE id=?1",
             params![
                 d.id,
@@ -146,6 +150,8 @@ impl Repo {
                 d.retention_max_minutes,
                 d.auto_delete_from_comma,
                 d.auto_delete_min_age_min,
+                d.cap_warn_enabled,
+                d.cap_warn_threshold_minutes,
             ],
         )?;
         Ok(())
@@ -719,6 +725,8 @@ struct RawDevice {
     retention_max_minutes: Option<i64>,
     auto_delete_from_comma: bool,
     auto_delete_min_age_min: i64,
+    cap_warn_enabled: bool,
+    cap_warn_threshold_minutes: i64,
 }
 
 fn map_raw_device(r: &rusqlite::Row) -> rusqlite::Result<RawDevice> {
@@ -736,6 +744,8 @@ fn map_raw_device(r: &rusqlite::Row) -> rusqlite::Result<RawDevice> {
         retention_max_minutes: r.get(10)?,
         auto_delete_from_comma: r.get(11)?,
         auto_delete_min_age_min: r.get(12)?,
+        cap_warn_enabled: r.get(13)?,
+        cap_warn_threshold_minutes: r.get(14)?,
     })
 }
 
@@ -754,5 +764,7 @@ fn raw_to_device(r: RawDevice) -> Result<Device> {
         retention_max_minutes: r.retention_max_minutes,
         auto_delete_from_comma: r.auto_delete_from_comma,
         auto_delete_min_age_min: r.auto_delete_min_age_min,
+        cap_warn_enabled: r.cap_warn_enabled,
+        cap_warn_threshold_minutes: r.cap_warn_threshold_minutes,
     })
 }

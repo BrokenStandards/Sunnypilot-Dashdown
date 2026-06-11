@@ -66,6 +66,8 @@ class MultiCamHevcPlaybackLiveTest {
                 retentionMaxMinutes = null,
                 autoDeleteFromComma = false,
                 autoDeleteMinAgeMin = 60,
+                capWarnEnabled = true,
+                capWarnThresholdMinutes = 10,
             ))
     try {
       // Smallest drive → fewest segments to download.

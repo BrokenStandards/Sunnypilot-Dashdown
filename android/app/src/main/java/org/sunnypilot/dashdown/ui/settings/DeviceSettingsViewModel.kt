@@ -21,6 +21,8 @@ data class DeviceSettingsState(
     val localMinutes: Long = 0L, // minutes (≈ segments) of footage on disk right now
     val autoDeleteFromComma: Boolean = false,
     val autoDeleteMinAgeMin: String = "60",
+    val capWarnEnabled: Boolean = true,
+    val capWarnThresholdMinutes: String = "10",
     val loading: Boolean = true,
     val saving: Boolean = false,
     val error: String? = null,
@@ -49,6 +51,8 @@ class DeviceSettingsViewModel(private val repo: DashdownRepository, private val 
               localMinutes = localMin,
               autoDeleteFromComma = s.autoDeleteFromComma,
               autoDeleteMinAgeMin = s.autoDeleteMinAgeMin.toString(),
+              capWarnEnabled = s.capWarnEnabled,
+              capWarnThresholdMinutes = s.capWarnThresholdMinutes.toString(),
               loading = false,
           )
         }
@@ -68,6 +72,11 @@ class DeviceSettingsViewModel(private val repo: DashdownRepository, private val 
 
   fun onMinAge(v: String) = _state.update { it.copy(autoDeleteMinAgeMin = v.filter(Char::isDigit)) }
 
+  fun onCapWarnEnabled(v: Boolean) = _state.update { it.copy(capWarnEnabled = v) }
+
+  fun onCapWarnThreshold(v: String) =
+      _state.update { it.copy(capWarnThresholdMinutes = v.filter(Char::isDigit)) }
+
   fun save() {
     viewModelScope.launch {
       _state.update { it.copy(saving = true, error = null) }
@@ -81,6 +90,8 @@ class DeviceSettingsViewModel(private val repo: DashdownRepository, private val 
                 retentionMaxMinutes = s.retentionMinutes.toLongOrNull(),
                 autoDeleteFromComma = s.autoDeleteFromComma,
                 autoDeleteMinAgeMin = s.autoDeleteMinAgeMin.toLongOrNull() ?: 0L,
+                capWarnEnabled = s.capWarnEnabled,
+                capWarnThresholdMinutes = s.capWarnThresholdMinutes.toLongOrNull() ?: 10L,
             ),
         )
         _state.update { it.copy(saving = false, saved = true) }

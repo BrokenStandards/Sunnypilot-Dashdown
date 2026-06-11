@@ -20,6 +20,8 @@ fn sample_device() -> Device {
         retention_max_minutes: Some(120),
         auto_delete_from_comma: false,
         auto_delete_min_age_min: 60,
+        cap_warn_enabled: true,
+        cap_warn_threshold_minutes: 10,
     }
 }
 
@@ -65,7 +67,7 @@ fn sample_segments() -> Vec<Segment> {
 #[test]
 fn migrates_and_round_trips() {
     let repo = Repo::open_in_memory().unwrap();
-    assert_eq!(repo.schema_version().unwrap(), 4);
+    assert_eq!(repo.schema_version().unwrap(), 5);
 
     let id = repo.insert_device(&sample_device()).unwrap();
     let got = repo.get_device(id).unwrap().unwrap();
@@ -75,6 +77,8 @@ fn migrates_and_round_trips() {
     assert_eq!(got.file_selection, FileSelection::previews_only());
     assert_eq!(got.port, 3923);
     assert_eq!(got.retention_max_minutes, Some(120));
+    assert!(got.cap_warn_enabled);
+    assert_eq!(got.cap_warn_threshold_minutes, 10);
     assert_eq!(repo.list_devices().unwrap().len(), 1);
 
     let segs = sample_segments();
@@ -93,13 +97,13 @@ fn reopen_is_idempotent_and_persists() {
 
     let id = {
         let repo = Repo::open(&path).unwrap();
-        assert_eq!(repo.schema_version().unwrap(), 4);
+        assert_eq!(repo.schema_version().unwrap(), 5);
         repo.insert_device(&sample_device()).unwrap()
     };
 
     // Re-open the same file: migrations must NOT re-run, data must persist.
     let repo = Repo::open(&path).unwrap();
-    assert_eq!(repo.schema_version().unwrap(), 4);
+    assert_eq!(repo.schema_version().unwrap(), 5);
     assert!(repo.get_device(id).unwrap().is_some());
     assert_eq!(repo.list_devices().unwrap().len(), 1);
 }
@@ -113,6 +117,8 @@ fn update_device_changes_mutable_fields() {
     d.active_mode = ConnMode::Wifi;
     d.auto_sync = false;
     d.retention_max_minutes = None;
+    d.cap_warn_enabled = false;
+    d.cap_warn_threshold_minutes = 25;
     repo.update_device(&d).unwrap();
 
     let got = repo.get_device(id).unwrap().unwrap();
@@ -120,6 +126,8 @@ fn update_device_changes_mutable_fields() {
     assert_eq!(got.active_mode, ConnMode::Wifi);
     assert!(!got.auto_sync);
     assert_eq!(got.retention_max_minutes, None);
+    assert!(!got.cap_warn_enabled);
+    assert_eq!(got.cap_warn_threshold_minutes, 25);
 }
 
 #[test]

@@ -92,4 +92,6 @@ internal fun probeDevice(name: String, port: UShort, host: String = "127.0.0.1")
         retentionMaxMinutes = null,
         autoDeleteFromComma = false,
         autoDeleteMinAgeMin = 60,
+        capWarnEnabled = true,
+        capWarnThresholdMinutes = 10,
     )
