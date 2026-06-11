@@ -82,6 +82,18 @@ impl SyncHandle {
     }
 }
 
+/// Local-footage accounting for the retention UI (storage readout + low-headroom
+/// warning). Minutes ≈ segments (each segment is ~1 minute).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RetentionStatus {
+    /// Minutes of footage fully present on disk (all selected files complete).
+    pub local_minutes: i64,
+    /// Of `local_minutes`, how many belong to preserved (starred) drives.
+    pub preserved_minutes: i64,
+    /// The device's retention budget in minutes; `None` = unlimited.
+    pub budget_minutes: Option<i64>,
+}
+
 impl SyncEngine {
     pub fn new(repo: Arc<Repo>, mirror_root: impl Into<PathBuf>) -> Self {
         Self {
@@ -251,31 +263,112 @@ impl SyncEngine {
         .await
     }
 
-    /// Prune local drives that exceed the device's `retention_max_minutes`
-    /// budget (newest kept first, `preserved` always skipped). Deletes only local
-    /// mirror files — the remote is untouched — then reconciles so pruned drives
-    /// reclassify to `NotDownloaded`. No-op when no budget is set. Returns the
-    /// pruned drive_keys. Intended Phase-B trigger: after each sync/download.
+    /// Prune local **segments** outside the retention window (the newest
+    /// `retention_max_minutes` non-preserved segments, plus all preserved drives).
+    /// Deletes only local mirror files — the remote is untouched — then reconciles
+    /// so drives that lost segments reclassify to `Partial`/`NotDownloaded`. No-op
+    /// when no budget is set. Returns the pruned segment ids (`route--seg`, for
+    /// logging). Shares [`retention::retention_window`] with the download path, so a
+    /// pruned segment is never re-downloaded. Intended Phase-B trigger: after each
+    /// sync/download, and on the offline maintenance sweep.
     pub async fn enforce_retention(&self, device: &Device) -> Result<Vec<String>> {
         let device_id = device.id;
         let drives = db(self.repo.clone(), move |r| r.get_drives(device_id)).await?;
-        let pruned = retention::plan_prune(&drives, device.retention_max_minutes);
-        if pruned.is_empty() {
-            return Ok(pruned);
-        }
+        let window = retention::retention_window(&drives, device.retention_max_minutes);
 
-        // Delete each pruned drive's local segment dirs (FS ops, no DB lock held).
+        // Delete out-of-window segments that actually hold local data (FS ops, no DB lock).
         let mirror = self.mirror_for(device);
+        let mut pruned = Vec::new();
         for d in &drives {
-            if pruned.contains(&d.drive_key) {
-                for seg in &d.segments {
+            if !matches!(d.sync_state, SyncStatus::Complete | SyncStatus::Partial) {
+                continue; // NotDownloaded/Downloading/Failed occupy no prunable disk
+            }
+            for seg in &d.segments {
+                if !window.contains(&(seg.name.route_id.clone(), seg.name.segment_num)) {
                     mirror.remove_dir(&dir_rel(REALDATA_REL, &seg.name)).await?;
+                    pruned.push(format!("{}--{}", seg.name.route_id, seg.name.segment_num));
                 }
             }
         }
-        // Reclassify from disk (pruned drives are now Missing → NotDownloaded).
+        if pruned.is_empty() {
+            return Ok(pruned);
+        }
+        // Reclassify from disk (drives with pruned segments → Partial / NotDownloaded).
         self.reconcile(device_id, device.file_selection).await?;
         Ok(pruned)
+    }
+
+    /// Drive keys auto-sync should download: those with ≥1 **in-window** segment whose
+    /// selected files aren't all complete on disk. Out-of-window segments are never
+    /// included, so a drive entirely beyond the budget is skipped (never downloaded
+    /// only to be pruned). Replaces a naive "every NotDownloaded/Partial drive" filter.
+    pub async fn pending_download_keys(&self, device: &Device) -> Result<Vec<String>> {
+        let device_id = device.id;
+        let selection = device.file_selection;
+        let drives = db(self.repo.clone(), move |r| r.get_drives(device_id)).await?;
+        let window = retention::retention_window(&drives, device.retention_max_minutes);
+        let mirror = self.mirror_for(device);
+        let mut keys = Vec::new();
+        'drive: for d in &drives {
+            for seg in &d.segments {
+                if !window.contains(&(seg.name.route_id.clone(), seg.name.segment_num)) {
+                    continue;
+                }
+                for f in &seg.files {
+                    if !selection.includes(f.kind) {
+                        continue;
+                    }
+                    let rel = file_rel(REALDATA_REL, &seg.name, &f.name);
+                    if resume::classify_file(&mirror, &rel, f.remote_size)
+                        != DownloadState::Complete
+                    {
+                        keys.push(d.drive_key.clone());
+                        continue 'drive;
+                    }
+                }
+            }
+        }
+        Ok(keys)
+    }
+
+    /// Local-footage accounting for the storage readout + low-headroom warning:
+    /// minutes (≈ segments) fully present on disk, how many are preserved, and the
+    /// budget. A segment counts as local when every selected file is complete.
+    pub async fn retention_status(&self, device: &Device) -> Result<RetentionStatus> {
+        let device_id = device.id;
+        let selection = device.file_selection;
+        let drives = db(self.repo.clone(), move |r| r.get_drives(device_id)).await?;
+        let mirror = self.mirror_for(device);
+        let (mut local_minutes, mut preserved_minutes) = (0i64, 0i64);
+        for d in &drives {
+            for seg in &d.segments {
+                let (mut any, mut all_complete) = (false, true);
+                for f in &seg.files {
+                    if !selection.includes(f.kind) {
+                        continue;
+                    }
+                    any = true;
+                    let rel = file_rel(REALDATA_REL, &seg.name, &f.name);
+                    if resume::classify_file(&mirror, &rel, f.remote_size)
+                        != DownloadState::Complete
+                    {
+                        all_complete = false;
+                        break;
+                    }
+                }
+                if any && all_complete {
+                    local_minutes += 1;
+                    if d.preserved {
+                        preserved_minutes += 1;
+                    }
+                }
+            }
+        }
+        Ok(RetentionStatus {
+            local_minutes,
+            preserved_minutes,
+            budget_minutes: device.retention_max_minutes,
+        })
     }
 
     /// Phase-B maintenance pass: free local space by enforcing the device's
@@ -368,19 +461,23 @@ impl SyncEngine {
         let selection = device.file_selection;
         let dk = drive_key.to_string();
 
-        // Load the target drive from the index.
-        let want = dk.clone();
-        let drive = db(self.repo.clone(), move |r| {
-            Ok(r.get_drives(device_id)?
-                .into_iter()
-                .find(|d| d.drive_key == want))
-        })
-        .await?
-        .ok_or_else(|| CoreError::NotFound(format!("drive {drive_key}")))?;
+        // Load ALL drives (needed for the retention window) and find the target.
+        let all_drives = db(self.repo.clone(), move |r| r.get_drives(device_id)).await?;
+        let drive = all_drives
+            .iter()
+            .find(|d| d.drive_key == dk)
+            .cloned()
+            .ok_or_else(|| CoreError::NotFound(format!("drive {drive_key}")))?;
 
-        // Build the selected file list.
+        // Build the selected file list — but only for segments **inside the retention
+        // window**, so we never download what retention would immediately prune (no
+        // prune↔re-download loop). Preserved drives are entirely in-window.
+        let window = retention::retention_window(&all_drives, device.retention_max_minutes);
         let mut items: Vec<Item> = Vec::new();
         for seg in &drive.segments {
+            if !window.contains(&(seg.name.route_id.clone(), seg.name.segment_num)) {
+                continue;
+            }
             for f in &seg.files {
                 if selection.includes(f.kind) {
                     items.push(Item {

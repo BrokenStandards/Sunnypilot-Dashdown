@@ -23,7 +23,8 @@ use crate::model::{ConnMode, Device, Drive, FileKind, JobState, SyncStatus};
 use crate::settings::DeviceSettings;
 use crate::storage::{paths::file_rel, MirrorStore};
 use crate::sync_engine::{
-    CancellationToken, DownloadProgress, ProgressSink, SyncEngine, SyncHandle, REALDATA_REL,
+    CancellationToken, DownloadProgress, ProgressSink, RetentionStatus, SyncEngine, SyncHandle,
+    REALDATA_REL,
 };
 
 /// A pollable snapshot of a drive's download status (drive state + the latest
@@ -361,6 +362,20 @@ impl AppCore {
     pub async fn run_maintenance(&self, device_id: i64) -> Result<()> {
         let dev = self.load_device(device_id).await?;
         self.engine.run_maintenance(&dev).await
+    }
+
+    /// Drive keys auto-sync should download (in the retention window + not yet
+    /// complete on disk). The background scheduler iterates these instead of every
+    /// not-downloaded drive, so footage beyond the budget is never fetched.
+    pub async fn pending_download_keys(&self, device_id: i64) -> Result<Vec<String>> {
+        let dev = self.load_device(device_id).await?;
+        self.engine.pending_download_keys(&dev).await
+    }
+
+    /// Local-footage accounting for the storage readout + low-headroom warning.
+    pub async fn retention_status(&self, device_id: i64) -> Result<RetentionStatus> {
+        let dev = self.load_device(device_id).await?;
+        self.engine.retention_status(&dev).await
     }
 
     pub async fn check_connectivity(&self, device_id: i64) -> Result<DeviceConnectivity> {

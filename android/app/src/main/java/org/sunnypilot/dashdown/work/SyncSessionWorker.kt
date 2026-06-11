@@ -79,16 +79,14 @@ class SyncSessionWorker(context: Context, params: WorkerParameters) :
         while (SystemClock.elapsedRealtime() < deadline && !isStopped) {
           if (tryIo { repo.checkConnectivity(d.id).reachable } != true) break // device left
           val drives = tryIo { repo.syncNow(d.id) } ?: break // refresh; null ⇒ gone/erroring
+          // The core decides what to fetch: only in-retention-window segments that aren't yet
+          // complete (never download footage retention would immediately prune → no loop).
           val pending =
-              drives
-                  .filter {
-                    it.syncState == SyncStatus.NOT_DOWNLOADED || it.syncState == SyncStatus.PARTIAL
-                  }
-                  .filterNot { it.driveKey in giveUp }
+              (tryIo { repo.pendingDownloadKeys(d.id) } ?: emptyList())
+                  .filterNot { it in giveUp }
                   .filterNot {
-                    // Leave drives the manual DownloadService is already pulling to it.
-                    tryIo { repo.getDriveStatus(d.id, it.driveKey).status } ==
-                        SyncStatus.DOWNLOADING
+                    // Leave drives the manual DownloadService is already pulling.
+                    tryIo { repo.getDriveStatus(d.id, it).status } == SyncStatus.DOWNLOADING
                   }
           if (pending.isEmpty()) {
             // Caught up. If a drive is still recording, wait for its next segment; else done.
@@ -98,22 +96,22 @@ class SyncSessionWorker(context: Context, params: WorkerParameters) :
             }
             break
           }
-          for (drive in pending) {
+          for (driveKey in pending) {
             if (isStopped || SystemClock.elapsedRealtime() >= deadline) break
-            current = tryIo { repo.startDriveDownload(d.id, drive.driveKey) } // resumes from .part
+            current = tryIo { repo.startDriveDownload(d.id, driveKey) } // resumes from .part
             if (current == null) {
-              giveUp.add(drive.driveKey)
+              giveUp.add(driveKey)
               continue
             }
-            when (awaitTerminal(repo, d.id, drive.driveKey, deadline)) {
-              SyncStatus.FAILED -> giveUp.add(drive.driveKey)
+            when (awaitTerminal(repo, d.id, driveKey, deadline)) {
+              SyncStatus.FAILED -> giveUp.add(driveKey)
               SyncStatus.COMPLETE -> {}
               else -> current.cancel() // deadline/stop mid-download → leave .part for next session
             }
             current = null
           }
         }
-        tryIo { repo.runMaintenance(d.id) } // retention (Phase D refines the policy)
+        Maintenance.sweep(applicationContext, repo, d) // local clear-down + low-headroom warning
       } finally {
         if (isStopped) current?.cancel() // stopped mid-download → leave .part for next session
       }

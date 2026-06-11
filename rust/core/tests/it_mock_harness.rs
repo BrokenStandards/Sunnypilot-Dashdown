@@ -101,7 +101,7 @@ async fn add_and_remove_drive_live() {
         1
     );
 
-    mock_copyparty::mutate::add_drive(&root, "000009ff--newdrive00", 2).unwrap();
+    mock_copyparty::mutate::add_drive(&root, "000009ff--newdrive00", 2, None).unwrap();
     assert_eq!(
         group_segments(client.list_segments("routes/").await.unwrap()).len(),
         2,

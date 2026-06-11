@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 
@@ -100,9 +101,29 @@ pub fn add_segment(root: &Path, route: Option<&str>, n: usize) -> io::Result<()>
 }
 
 /// Create a brand-new drive: `route--0 .. route--(segs-1)`, each a full segment.
-pub fn add_drive(root: &Path, route: &str, segs: usize) -> io::Result<()> {
+/// When `mtime_s` is set, every written file's modified time is forced to it so the
+/// derived segment/drive age is deterministic (segment age = newest file mtime) —
+/// lets tests stage drives in a known oldest→newest order for retention.
+pub fn add_drive(root: &Path, route: &str, segs: usize, mtime_s: Option<i64>) -> io::Result<()> {
     for i in 0..segs as u32 {
-        full_segment(root, &format!("{route}--{i}"));
+        let seg = format!("{route}--{i}");
+        full_segment(root, &seg);
+        if let Some(m) = mtime_s {
+            set_seg_mtime(root, &seg, m)?;
+        }
+    }
+    Ok(())
+}
+
+/// Force every file in `routes/<seg>/` to modified-time `mtime_s` (epoch seconds).
+fn set_seg_mtime(root: &Path, seg: &str, mtime_s: i64) -> io::Result<()> {
+    let when = SystemTime::UNIX_EPOCH + Duration::from_secs(mtime_s.max(0) as u64);
+    let times = fs::FileTimes::new().set_modified(when);
+    for entry in fs::read_dir(root.join(ROUTES).join(seg))? {
+        let path = entry?.path();
+        if path.is_file() {
+            fs::File::options().write(true).open(&path)?.set_times(times)?;
+        }
     }
     Ok(())
 }
@@ -134,7 +155,7 @@ mod tests {
         let root = tmp.path();
         let route = "000001a3--c20ba54385"; // route id with an internal "--"
 
-        add_drive(root, route, 2).unwrap();
+        add_drive(root, route, 2, None).unwrap();
         assert!(seg_dir(root, &format!("{route}--0")).is_dir());
         assert!(seg_dir(root, &format!("{route}--1")).is_dir());
         assert!(seg_dir(root, &format!("{route}--0"))
@@ -177,8 +198,8 @@ mod tests {
     fn remove_drive_only_touches_its_own_segments() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        add_drive(root, "keep--01", 2).unwrap();
-        add_drive(root, "drop--02", 3).unwrap();
+        add_drive(root, "keep--01", 2, None).unwrap();
+        add_drive(root, "drop--02", 3, None).unwrap();
 
         remove_drive(root, "drop--02").unwrap();
         assert!(!seg_dir(root, "drop--02--0").exists());
@@ -196,8 +217,24 @@ mod tests {
     fn primary_route_is_lexically_first() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        add_drive(root, "bbb--22", 1).unwrap();
-        add_drive(root, "aaa--11", 1).unwrap();
+        add_drive(root, "bbb--22", 1, None).unwrap();
+        add_drive(root, "aaa--11", 1, None).unwrap();
         assert_eq!(primary_route(root).as_deref(), Some("aaa--11"));
+    }
+
+    #[test]
+    fn add_drive_with_mtime_forces_file_times() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        add_drive(root, "ts--01", 1, Some(1_000_000)).unwrap();
+        let f = seg_dir(root, "ts--01--0").join("qcamera.ts");
+        let secs = std::fs::metadata(&f)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(secs, 1_000_000);
     }
 }

@@ -1,209 +1,162 @@
-//! Pure storage-management policy: which local drives to prune to fit a retention
-//! budget. Side-effect-free and unit-testable; the [`SyncEngine`](super::SyncEngine)
-//! does the actual file/DB work.
+//! Pure storage-management policy: the **segment retention window** — which local
+//! segments to keep to fit a budget. Side-effect-free and unit-testable; the
+//! [`SyncEngine`](super::SyncEngine) does the actual file/DB work and uses this for
+//! BOTH sides so they can never fight:
+//! - downloads fetch only **in-window** segments, and
+//! - pruning deletes only **out-of-window** local segments,
+//!
+//! which makes a prune↔re-download loop structurally impossible.
 
-use crate::model::{Drive, SyncStatus};
+use std::collections::HashSet;
 
-/// Whether a drive holds local data that occupies mirror space (and so counts
-/// toward the retention budget). `Downloading` is excluded — it is an in-flight
-/// job we must never evict from under itself.
-fn has_local_data(d: &Drive) -> bool {
-    matches!(d.sync_state, SyncStatus::Complete | SyncStatus::Partial)
-}
+use crate::model::Drive;
 
-/// The drive_keys to prune so the mirror fits `budget_minutes` of footage,
-/// newest kept first. `None` ⇒ unlimited ⇒ never prune.
+/// A segment's identity within a device: `(route_id, segment_num)`.
+pub type SegRef = (String, u32);
+
+/// The segments to KEEP locally for `budget_minutes` of footage: **every segment of a
+/// `preserved` drive** (a user pin — always kept, never counted against the budget) plus
+/// **the newest `budget` non-preserved segments** (each segment is ~1 minute, ordered
+/// newest-first by approximate time). `None` budget ⇒ unlimited ⇒ keep everything.
 ///
-/// Only drives with local data are considered (others occupy nothing). Drives
-/// are walked newest-first; each consumes `segment_count` minutes (segments are
-/// ~1 min). Once the running total exceeds the budget, every *older*,
-/// non-`preserved` drive is pruned. Preserved drives consume budget (they really
-/// occupy disk) but are never returned — a user pin always wins, even if that
-/// means staying over budget. Pure: takes `&[Drive]`, touches no I/O.
-pub fn plan_prune(drives: &[Drive], budget_minutes: Option<i64>) -> Vec<String> {
+/// Pure: takes `&[Drive]`, touches no I/O. Newest-first order is total
+/// (`approx_time_ms`, then route, then segment number) so the result is deterministic
+/// across equal timestamps.
+pub fn retention_window(drives: &[Drive], budget_minutes: Option<i64>) -> HashSet<SegRef> {
+    let mut keep: HashSet<SegRef> = HashSet::new();
+
     let Some(budget) = budget_minutes else {
-        return Vec::new();
-    };
-
-    // Newest-first by end_ms, then start_ms, then last segment index, then key
-    // (a total order so the result is deterministic across equal timestamps).
-    let mut local: Vec<&Drive> = drives.iter().filter(|d| has_local_data(d)).collect();
-    local.sort_by(|a, b| {
-        b.end_ms
-            .cmp(&a.end_ms)
-            .then(b.start_ms.cmp(&a.start_ms))
-            .then(b.last_segment_num.cmp(&a.last_segment_num))
-            .then(b.drive_key.cmp(&a.drive_key))
-    });
-
-    let mut kept_minutes: i64 = 0;
-    let mut over = false;
-    let mut prune = Vec::new();
-    for d in local {
-        kept_minutes += d.segment_count as i64;
-        // A drive that brings the running total to exactly the budget is kept;
-        // the first one strictly over flips us into pruning the older tail.
-        if over {
-            if !d.preserved {
-                prune.push(d.drive_key.clone());
-            }
-        } else if kept_minutes > budget {
-            over = true;
-            if !d.preserved {
-                prune.push(d.drive_key.clone());
+        for d in drives {
+            for s in &d.segments {
+                keep.insert((s.name.route_id.clone(), s.name.segment_num));
             }
         }
+        return keep;
+    };
+
+    // Preserved drives: every segment kept, none counted toward the budget.
+    let mut candidates = Vec::new();
+    for d in drives {
+        if d.preserved {
+            for s in &d.segments {
+                keep.insert((s.name.route_id.clone(), s.name.segment_num));
+            }
+        } else {
+            candidates.extend(d.segments.iter());
+        }
     }
-    prune
+
+    // Newest-first; keep the freshest `budget` non-preserved segments.
+    candidates.sort_by(|a, b| {
+        b.approx_time_ms()
+            .cmp(&a.approx_time_ms())
+            .then(b.name.route_id.cmp(&a.name.route_id))
+            .then(b.name.segment_num.cmp(&a.name.segment_num))
+    });
+    for s in candidates.into_iter().take(budget.max(0) as usize) {
+        keep.insert((s.name.route_id.clone(), s.name.segment_num));
+    }
+    keep
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Segment, SegmentName};
+    use crate::model::{FileKind, Segment, SegmentFile, SegmentName, SyncStatus};
 
-    /// A drive with `n` segments, the given local-data status and pin, timed so
-    /// that a larger `end` is "newer".
-    fn drive(
-        key: &str,
-        segs: u32,
-        end_ms: Option<i64>,
-        state: SyncStatus,
-        preserved: bool,
-    ) -> Drive {
-        let segments = (0..segs)
-            .map(|i| Segment {
-                name: SegmentName {
-                    route_id: key.to_string(),
-                    segment_num: i,
-                },
-                files: vec![],
-                recording: false,
-            })
-            .collect();
-        Drive {
-            drive_key: format!("{key}--0"),
-            route_id: key.to_string(),
-            first_segment_num: 0,
-            last_segment_num: segs.saturating_sub(1),
-            start_ms: end_ms.map(|e| e - segs as i64 * 60_000),
-            end_ms,
-            segment_count: segs,
+    fn seg(route: &str, n: u32, mtime_s: i64) -> Segment {
+        Segment {
+            name: SegmentName {
+                route_id: route.to_string(),
+                segment_num: n,
+            },
+            files: vec![SegmentFile {
+                kind: FileKind::QCamera,
+                name: "qcamera.ts".to_string(),
+                remote_size: 1200,
+                mtime_s,
+            }],
             recording: false,
-            sync_state: state,
+        }
+    }
+
+    /// A drive on `route` with one segment per `(segment_num, mtime_s)`.
+    fn drive(route: &str, segs: &[(u32, i64)], preserved: bool) -> Drive {
+        let segments: Vec<Segment> = segs.iter().map(|(n, m)| seg(route, *n, *m)).collect();
+        Drive {
+            drive_key: format!("{route}--{}", segs.first().map(|(n, _)| *n).unwrap_or(0)),
+            route_id: route.to_string(),
+            first_segment_num: segs.first().map(|(n, _)| *n).unwrap_or(0),
+            last_segment_num: segs.last().map(|(n, _)| *n).unwrap_or(0),
+            start_ms: segs.first().map(|(_, m)| m * 1000),
+            end_ms: segs.last().map(|(_, m)| m * 1000),
+            segment_count: segments.len() as u32,
+            recording: false,
+            sync_state: SyncStatus::Complete,
             preserved,
             segments,
         }
     }
 
-    // ---- plan_prune -------------------------------------------------------
-
-    #[test]
-    fn none_budget_never_prunes() {
-        let d = vec![drive("a", 100, Some(1_000), SyncStatus::Complete, false)];
-        assert!(plan_prune(&d, None).is_empty());
+    fn r(route: &str, n: u32) -> SegRef {
+        (route.to_string(), n)
     }
 
     #[test]
-    fn under_budget_keeps_everything() {
-        let d = vec![
-            drive("a", 5, Some(2_000), SyncStatus::Complete, false),
-            drive("b", 5, Some(1_000), SyncStatus::Complete, false),
-        ];
-        assert!(plan_prune(&d, Some(20)).is_empty());
+    fn none_budget_keeps_everything() {
+        let drives = vec![drive("a", &[(0, 1), (1, 2)], false), drive("b", &[(0, 3)], false)];
+        let w = retention_window(&drives, None);
+        assert_eq!(w.len(), 3);
+        assert!(w.contains(&r("a", 0)) && w.contains(&r("a", 1)) && w.contains(&r("b", 0)));
     }
 
     #[test]
-    fn over_budget_prunes_oldest_keeps_newest() {
-        // newest=c(3), then b(2), then a(1). Budget 10 keeps c+b (10 exactly),
-        // prunes a.
-        let d = vec![
-            drive("a", 5, Some(1_000), SyncStatus::Complete, false),
-            drive("b", 5, Some(2_000), SyncStatus::Complete, false),
-            drive("c", 5, Some(3_000), SyncStatus::Complete, false),
-        ];
-        assert_eq!(plan_prune(&d, Some(10)), vec!["a--0".to_string()]);
+    fn keeps_newest_n_nonpreserved_segments() {
+        // One drive, 3 segments oldest→newest by mtime; budget 2 keeps the newest two.
+        let drives = vec![drive("a", &[(0, 1000), (1, 2000), (2, 3000)], false)];
+        let w = retention_window(&drives, Some(2));
+        assert_eq!(w.len(), 2);
+        assert!(w.contains(&r("a", 2)) && w.contains(&r("a", 1)));
+        assert!(!w.contains(&r("a", 0))); // oldest pruned
     }
 
     #[test]
-    fn boundary_exactly_at_budget_keeps_all() {
-        let d = vec![
-            drive("a", 5, Some(1_000), SyncStatus::Complete, false),
-            drive("b", 5, Some(2_000), SyncStatus::Complete, false),
-        ];
-        assert!(plan_prune(&d, Some(10)).is_empty());
+    fn preserved_excluded_from_budget_and_always_kept() {
+        // A is preserved (3 segs, OLD); B is non-preserved (3 segs, NEW). Budget 2.
+        let a = drive("a", &[(0, 1000), (1, 1100), (2, 1200)], true);
+        let b = drive("b", &[(0, 5000), (1, 5100), (2, 5200)], false);
+        let w = retention_window(&[a, b], Some(2));
+        // All of preserved A is kept (not counted); only the newest 2 of B.
+        assert!(w.contains(&r("a", 0)) && w.contains(&r("a", 1)) && w.contains(&r("a", 2)));
+        assert!(w.contains(&r("b", 2)) && w.contains(&r("b", 1)));
+        assert!(!w.contains(&r("b", 0))); // B's oldest is out of budget
+        assert_eq!(w.len(), 5);
     }
 
     #[test]
-    fn one_over_budget_prunes_oldest() {
-        let d = vec![
-            drive("a", 5, Some(1_000), SyncStatus::Complete, false),
-            drive("b", 5, Some(2_000), SyncStatus::Complete, false),
-        ];
-        // Budget 9: keep b (5), a brings total to 10 > 9 ⇒ prune a.
-        assert_eq!(plan_prune(&d, Some(9)), vec!["a--0".to_string()]);
+    fn long_drive_kept_partially() {
+        // A single 5-segment drive with budget 3 → only the newest 3 segments kept.
+        let drives = vec![drive("a", &[(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)], false)];
+        let w = retention_window(&drives, Some(3));
+        assert_eq!(w.len(), 3);
+        assert!(w.contains(&r("a", 4)) && w.contains(&r("a", 3)) && w.contains(&r("a", 2)));
+        assert!(!w.contains(&r("a", 0)) && !w.contains(&r("a", 1)));
     }
 
     #[test]
-    fn preserved_is_skipped_but_consumes_budget() {
-        // newest=c(preserved), b, a. Budget 6. c consumes 5 (kept, pinned).
-        // b brings total to 10 > 6 ⇒ over; b pruned. a also pruned.
-        // The pinned c does NOT save b from eviction — it still eats budget.
-        let d = vec![
-            drive("a", 5, Some(1_000), SyncStatus::Complete, false),
-            drive("b", 5, Some(2_000), SyncStatus::Complete, false),
-            drive("c", 5, Some(3_000), SyncStatus::Complete, true),
-        ];
-        let mut got = plan_prune(&d, Some(6));
-        got.sort();
-        assert_eq!(got, vec!["a--0".to_string(), "b--0".to_string()]);
+    fn equal_mtime_tiebreak_is_deterministic() {
+        // All same mtime → newest-first falls back to route desc, then segment desc.
+        let drives = vec![drive("a", &[(0, 7), (1, 7)], false), drive("b", &[(0, 7)], false)];
+        let w = retention_window(&drives, Some(2));
+        // Order desc: ("b",0), ("a",1), ("a",0) → keep the first two.
+        assert!(w.contains(&r("b", 0)) && w.contains(&r("a", 1)));
+        assert!(!w.contains(&r("a", 0)));
     }
 
     #[test]
-    fn preserved_old_drive_never_pruned() {
-        // Budget 5: newest c fills it; b goes over and is pruned; a is also over
-        // but pinned ⇒ kept. Proves a pin survives eviction.
-        let d = vec![
-            drive("a", 5, Some(1_000), SyncStatus::Complete, true),
-            drive("b", 5, Some(2_000), SyncStatus::Complete, false),
-            drive("c", 5, Some(3_000), SyncStatus::Complete, false),
-        ];
-        assert_eq!(plan_prune(&d, Some(5)), vec!["b--0".to_string()]);
-    }
-
-    #[test]
-    fn only_local_data_drives_considered() {
-        // NotDownloaded/Downloading/Failed occupy nothing ⇒ never pruned even
-        // though they would blow a tiny budget if counted.
-        let d = vec![
-            drive("a", 100, Some(1_000), SyncStatus::NotDownloaded, false),
-            drive("b", 100, Some(2_000), SyncStatus::Downloading, false),
-            drive("c", 100, Some(3_000), SyncStatus::Failed, false),
-            drive("d", 5, Some(4_000), SyncStatus::Complete, false),
-        ];
-        assert!(plan_prune(&d, Some(10)).is_empty());
-    }
-
-    #[test]
-    fn partial_drives_count_and_can_be_pruned() {
-        let d = vec![
-            drive("a", 8, Some(1_000), SyncStatus::Partial, false),
-            drive("b", 5, Some(2_000), SyncStatus::Complete, false),
-        ];
-        // newest=b(5), a(8) brings total to 13 > 5 ⇒ prune a (Partial counts).
-        assert_eq!(plan_prune(&d, Some(5)), vec!["a--0".to_string()]);
-    }
-
-    #[test]
-    fn equal_end_ms_tie_break_is_deterministic() {
-        // Same end_ms; order resolved by start_ms then last_seg then key. With a
-        // budget that keeps exactly one, the *newest by tie-break* is kept.
-        let d = vec![
-            drive("a", 5, Some(1_000), SyncStatus::Complete, false),
-            drive("b", 5, Some(1_000), SyncStatus::Complete, false),
-        ];
-        // Both end at 1000; start_ms equal; last_seg equal; key "b">"a" so b is
-        // "newer" → a pruned. Budget 5 keeps one.
-        assert_eq!(plan_prune(&d, Some(5)), vec!["a--0".to_string()]);
+    fn budget_at_least_total_keeps_all_nonpreserved() {
+        let drives = vec![drive("a", &[(0, 1), (1, 2)], false)];
+        let w = retention_window(&drives, Some(10));
+        assert_eq!(w.len(), 2);
     }
 }

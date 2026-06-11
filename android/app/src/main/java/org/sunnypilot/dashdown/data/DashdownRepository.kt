@@ -13,6 +13,7 @@ import uniffi.dashdown_core.DeviceSettings
 import uniffi.dashdown_core.Drive
 import uniffi.dashdown_core.DriveSyncStatus
 import uniffi.dashdown_core.FileKind
+import uniffi.dashdown_core.RetentionStatus
 import uniffi.dashdown_core.SegmentPath
 import uniffi.dashdown_core.SyncHandle
 
@@ -118,6 +119,18 @@ class DashdownRepository(private val locator: ServiceLocator) {
   }
 
   suspend fun runMaintenance(deviceId: Long) = io { locator.core.runMaintenance(deviceId) }
+
+  /** Drive keys auto-sync should download: in the retention window + not yet complete on disk. */
+  suspend fun pendingDownloadKeys(deviceId: Long): List<String> = io {
+    locator.core.pendingDownloadKeys(deviceId)
+  }
+
+  /**
+   * Local-footage accounting (minutes on disk, of-which-preserved, budget) for the retention UI.
+   */
+  suspend fun retentionStatus(deviceId: Long): RetentionStatus = io {
+    locator.core.retentionStatus(deviceId)
+  }
 
   suspend fun checkConnectivity(deviceId: Long): DeviceConnectivity = io {
     locator.core.checkConnectivity(deviceId)

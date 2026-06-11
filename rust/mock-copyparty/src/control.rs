@@ -136,6 +136,10 @@ struct AddDrive {
     route: String,
     #[serde(default = "one")]
     segs: usize,
+    /// Force every file's modified-time (epoch seconds) so the drive's derived age is
+    /// deterministic — lets retention tests stage a known oldest→newest order.
+    #[serde(default)]
+    mtime_s: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -168,7 +172,7 @@ async fn add_segment(State(sup): State<Shared>, Json(p): Json<AddSegment>) -> Js
 
 async fn add_drive(State(sup): State<Shared>, Json(p): Json<AddDrive>) -> Json<Value> {
     let s = sup.lock().await;
-    let res = mutate::add_drive(&s.root, &p.route, p.segs);
+    let res = mutate::add_drive(&s.root, &p.route, p.segs, p.mtime_s);
     reply(res.map(|_| s.status()))
 }
 

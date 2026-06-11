@@ -19,6 +19,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -127,6 +128,14 @@ fun DeviceSettingsScreen(
               singleLine = true,
               keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
               modifier = Modifier.fillMaxWidth().testTag("settings_retention"),
+          )
+          Text(
+              buildString {
+                append("Using ~${state.localMinutes} min on this phone")
+                state.retentionMinutes.toLongOrNull()?.let { append(" · budget $it min") }
+              },
+              style = MaterialTheme.typography.bodySmall,
+              modifier = Modifier.testTag("settings_storage_usage"),
           )
 
           HorizontalDivider()

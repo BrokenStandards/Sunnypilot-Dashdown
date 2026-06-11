@@ -59,14 +59,16 @@ fn setup() -> Setup {
     }
 }
 
-/// One route's segments, each carrying a single qcamera file with a fixed mtime
-/// (so the derived `end_ms` — and thus drive age order — is deterministic).
-fn route_segments(route: &str, n_segs: u32, mtime_s: i64) -> Vec<Segment> {
-    (0..n_segs)
-        .map(|i| Segment {
+/// One route's segments, one qcamera file each, with an explicit per-segment mtime
+/// (segment `i` carries `mtimes[i]`), so segment age order is deterministic.
+fn route_segments_at(route: &str, mtimes: &[i64]) -> Vec<Segment> {
+    mtimes
+        .iter()
+        .enumerate()
+        .map(|(i, &mtime_s)| Segment {
             name: SegmentName {
                 route_id: route.into(),
-                segment_num: i,
+                segment_num: i as u32,
             },
             files: vec![SegmentFile {
                 kind: FileKind::QCamera,
@@ -79,55 +81,56 @@ fn route_segments(route: &str, n_segs: u32, mtime_s: i64) -> Vec<Segment> {
         .collect()
 }
 
+/// Segment-level retention: keep the newest N non-preserved SEGMENTS (a long drive is
+/// kept partially), preserved drives are excluded from the budget and never pruned, and
+/// a pruned segment is never re-listed for download (the loop is structurally impossible).
 #[tokio::test]
-async fn retention_prunes_oldest_keeps_newest_and_preserved() {
+async fn retention_prunes_old_segments_keeps_newest_and_preserved() {
     let s = setup();
-    // No server needed — retention is local-only.
-    let dummy: SocketAddr = "127.0.0.1:1".parse().unwrap();
+    let dummy: SocketAddr = "127.0.0.1:1".parse().unwrap(); // no server: retention is local-only
     let mut dev = device(dummy, FileSelection::previews_only());
-    dev.retention_max_minutes = Some(4); // budget: 4 minutes of footage
+    dev.retention_max_minutes = Some(3); // keep the newest 3 non-preserved segments
     dev.id = s.repo.insert_device(&dev).unwrap();
 
-    // Three drives, newest→oldest by mtime: C(2 segs) newest, B(3 segs), A(2 segs)
-    // oldest+pinned. Newest-first fill: C=2 ≤4; B→5 >4 ⇒ prune B; A over but pinned.
-    const A: &str = "000000a1--aaaaaaaaaa"; // oldest, preserved
-    const B: &str = "000000b2--bbbbbbbbbb"; // middle, pruned
-    const C: &str = "000000c3--cccccccccc"; // newest, kept
+    const D: &str = "000000d1--dddddddddd"; // non-preserved, 5 segments (newest footage)
+    const P: &str = "000000a0--aaaaaaaaaa"; // preserved, 2 OLD segments
     let mut all = Vec::new();
-    all.extend(route_segments(A, 2, 1000));
-    all.extend(route_segments(B, 3, 2000));
-    all.extend(route_segments(C, 2, 3000));
+    all.extend(route_segments_at(P, &[500, 560])); // oldest, but pinned
+    all.extend(route_segments_at(D, &[1000, 1060, 1120, 1180, 1240]));
 
     s.repo.upsert_segments(dev.id, &all).unwrap();
     let drives = group_segments(all.clone());
     s.repo.replace_drives(dev.id, &drives).unwrap();
 
-    // Place the local mirror files and pin drive A.
+    // Mirror every segment's qcamera and pin P.
     let mirror = MirrorStore::new(s.mirror_root.join(dev.id.to_string()));
     for seg in &all {
         let r = rel(&seg.name.route_id, seg.name.segment_num, "qcamera.ts");
         mirror.write_all(&r, &[0u8; 1200]).await.unwrap();
     }
     s.repo
-        .set_drive_preserved(dev.id, &format!("{A}--0"), true)
+        .set_drive_preserved(dev.id, &format!("{P}--0"), true)
         .unwrap();
-    // Reconcile so all three are Complete (files present for the selection).
     let reconciled = s.engine.reconcile_device(&dev).await.unwrap();
     assert!(reconciled
         .iter()
         .all(|d| d.sync_state == SyncStatus::Complete));
 
-    // Enforce retention: only B (middle, unpinned, over budget) is pruned.
+    // Budget 3: keep P (preserved, free) + the newest 3 of D (segments 2,3,4). Prune D's
+    // oldest two segments only — the drive is kept PARTIALLY.
     let pruned = s.engine.enforce_retention(&dev).await.unwrap();
-    assert_eq!(pruned, vec![format!("{B}--0")]);
+    assert_eq!(pruned.len(), 2);
+    assert!(pruned.contains(&format!("{D}--0")) && pruned.contains(&format!("{D}--1")));
 
-    // B's local files are gone; A and C remain.
-    assert!(!mirror.is_complete(&rel(B, 0, "qcamera.ts")));
-    assert!(!mirror.is_complete(&rel(B, 1, "qcamera.ts")));
-    assert!(mirror.is_complete(&rel(A, 0, "qcamera.ts")));
-    assert!(mirror.is_complete(&rel(C, 0, "qcamera.ts")));
+    assert!(!mirror.is_complete(&rel(D, 0, "qcamera.ts")));
+    assert!(!mirror.is_complete(&rel(D, 1, "qcamera.ts")));
+    for n in 2..5 {
+        assert!(mirror.is_complete(&rel(D, n, "qcamera.ts")));
+    }
+    assert!(mirror.is_complete(&rel(P, 0, "qcamera.ts")));
+    assert!(mirror.is_complete(&rel(P, 1, "qcamera.ts")));
 
-    // Sync state reflects the prune: B NotDownloaded, A & C still Complete.
+    // D is now Partial (lost 2 of 5 segments); P stays Complete + preserved.
     let by_key: std::collections::HashMap<_, _> = s
         .repo
         .get_drives(dev.id)
@@ -135,11 +138,20 @@ async fn retention_prunes_oldest_keeps_newest_and_preserved() {
         .into_iter()
         .map(|d| (d.drive_key.clone(), d))
         .collect();
-    assert_eq!(
-        by_key[&format!("{B}--0")].sync_state,
-        SyncStatus::NotDownloaded
+    assert_eq!(by_key[&format!("{D}--0")].sync_state, SyncStatus::Partial);
+    assert_eq!(by_key[&format!("{P}--0")].sync_state, SyncStatus::Complete);
+    assert!(by_key[&format!("{P}--0")].preserved);
+
+    // Loop guard: the pruned (out-of-window) segments are never re-listed for download.
+    let pending = s.engine.pending_download_keys(&dev).await.unwrap();
+    assert!(
+        pending.is_empty(),
+        "pruned segments must not be re-listed for download: {pending:?}"
     );
-    assert_eq!(by_key[&format!("{A}--0")].sync_state, SyncStatus::Complete);
-    assert_eq!(by_key[&format!("{C}--0")].sync_state, SyncStatus::Complete);
-    assert!(by_key[&format!("{A}--0")].preserved);
+
+    // Storage accounting: 5 local minutes (P:2 + D:3), 2 preserved, budget 3.
+    let st = s.engine.retention_status(&dev).await.unwrap();
+    assert_eq!(st.local_minutes, 5);
+    assert_eq!(st.preserved_minutes, 2);
+    assert_eq!(st.budget_minutes, Some(3));
 }
