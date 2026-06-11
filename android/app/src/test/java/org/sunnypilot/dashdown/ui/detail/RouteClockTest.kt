@@ -59,4 +59,44 @@ class RouteClockTest {
     assertEquals(
         listOf<VideoSlot>(VideoSlot.QcamVideo), windowVideoLayout(emptyList(), 0u) { _, _ -> true })
   }
+
+  private val road = VideoSlot.Hd(CameraId.ROAD)
+  private val wide = VideoSlot.Hd(CameraId.WIDE)
+  private val driver = VideoSlot.Hd(CameraId.DRIVER)
+
+  @Test
+  fun swapSlotsExchangesTwoTiles() {
+    // Drag road (0) onto driver (2): they trade places; the middle tile stays put.
+    assertEquals(listOf(driver, wide, road), swapSlots(listOf(road, wide, driver), 0, 2))
+  }
+
+  @Test
+  fun swapSlotsIsNoOpForEqualOrOutOfRange() {
+    val order = listOf(road, wide)
+    assertEquals(order, swapSlots(order, 1, 1)) // same index
+    assertEquals(order, swapSlots(order, 0, 5)) // out of range
+    assertEquals(order, swapSlots(order, -1, 0)) // out of range
+  }
+
+  @Test
+  fun orderedVisibleKeepsUserOrderForStillVisibleSlots() {
+    // User dragged wide before road; both still visible → that order is preserved.
+    val preferred = listOf(wide, road)
+    assertEquals(preferred, orderedVisibleSlots(listOf(road, wide), preferred))
+  }
+
+  @Test
+  fun orderedVisibleAppendsNewlyEnabledCameraAtEnd() {
+    // User order was [wide, road]; driver just toggled on → appended after the user-placed tiles.
+    assertEquals(
+        listOf(wide, road, driver),
+        orderedVisibleSlots(listOf(road, wide, driver), listOf(wide, road)))
+  }
+
+  @Test
+  fun orderedVisibleDropsSlotsNoLongerVisible() {
+    // User order had driver, but it was toggled off → it disappears from the result.
+    assertEquals(
+        listOf(wide, road), orderedVisibleSlots(listOf(road, wide), listOf(driver, wide, road)))
+  }
 }
