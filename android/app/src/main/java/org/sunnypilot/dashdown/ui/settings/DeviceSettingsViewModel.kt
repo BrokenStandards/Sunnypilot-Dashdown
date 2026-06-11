@@ -18,6 +18,7 @@ data class DeviceSettingsState(
     val fileSelection: FileSelection =
         FileSelection(false, false, false, true, false, false, false, false),
     val retentionMinutes: String = "", // blank = unlimited (null)
+    val localMinutes: Long = 0L, // minutes (≈ segments) of footage on disk right now
     val autoDeleteFromComma: Boolean = false,
     val autoDeleteMinAgeMin: String = "60",
     val loading: Boolean = true,
@@ -39,11 +40,13 @@ class DeviceSettingsViewModel(private val repo: DashdownRepository, private val 
     viewModelScope.launch {
       try {
         val s = repo.getSettings(deviceId)
+        val localMin = runCatching { repo.retentionStatus(deviceId).localMinutes }.getOrDefault(0L)
         _state.update {
           it.copy(
               autoSync = s.autoSync,
               fileSelection = s.fileSelection,
               retentionMinutes = s.retentionMaxMinutes?.toString() ?: "",
+              localMinutes = localMin,
               autoDeleteFromComma = s.autoDeleteFromComma,
               autoDeleteMinAgeMin = s.autoDeleteMinAgeMin.toString(),
               loading = false,

@@ -276,7 +276,7 @@ impl MockComma {
         let dev = devices
             .get(&p.device_id)
             .ok_or_else(|| not_found(&p.device_id))?;
-        mock_copyparty::mutate::add_drive(dev.temp.path(), &p.route, p.segs.unwrap_or(1))
+        mock_copyparty::mutate::add_drive(dev.temp.path(), &p.route, p.segs.unwrap_or(1), None)
             .map_err(io_err)?;
         ok(dev.info(&p.device_id))
     }

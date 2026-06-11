@@ -59,7 +59,7 @@ fn body_json(resp: &str) -> Value {
 #[tokio::test(flavor = "multi_thread")]
 async fn supervisor_toggles_reachability_on_same_port() {
     let tmp = tempfile::TempDir::new().unwrap();
-    mutate::add_drive(tmp.path(), "000001a3--c20ba54385", 2).unwrap();
+    mutate::add_drive(tmp.path(), "000001a3--c20ba54385", 2, None).unwrap();
     let dport = free_port().await;
     let data_addr = SocketAddr::from(([127, 0, 0, 1], dport));
 
@@ -80,7 +80,7 @@ async fn supervisor_toggles_reachability_on_same_port() {
 async fn control_plane_mutates_tree_and_reports_status() {
     let tmp = tempfile::TempDir::new().unwrap();
     let route = "000001a3--c20ba54385";
-    mutate::add_drive(tmp.path(), route, 3).unwrap();
+    mutate::add_drive(tmp.path(), route, 3, None).unwrap();
 
     let dport = free_port().await;
     let data_addr = SocketAddr::from(([127, 0, 0, 1], dport));
