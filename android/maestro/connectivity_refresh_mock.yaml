@@ -1,0 +1,67 @@
+# MOCK-ONLY. The connectivity dot re-probes on its own (8s foreground poll) and
+# reflects the server stopping/restarting — with no manual refresh. Mirrors the
+# instrumented DotLiveRefreshTest as a black-box flow.
+#
+# The data server is toggled via the control port (runScript → http, host-side).
+# The device's DATA port uses the emulator host alias 10.0.2.2 (NOT adb reverse):
+# a reverse tunnel accepts the device-side connect even when the host listener is
+# closed, masking the outage. 10.0.2.2 → host 127.0.0.1 is genuinely refused when
+# the mock drops the port. Control-port steps self-gate to MODE==mock.
+#
+# Args: PORT (mock data port), CONTROL (control port), MODE (=mock).
+appId: org.sunnypilot.dashdown
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible:
+      id: "add_device_fab"
+    timeout: 15000
+- tapOn:
+    id: "add_device_fab"
+- tapOn:
+    id: "device_form_name"
+- inputText: "ConnDot"
+- tapOn:
+    id: "device_form_hotspot_ip"
+- eraseText
+- inputText: "10.0.2.2"
+- tapOn:
+    id: "device_form_port"
+- eraseText
+- inputText: "${PORT}"
+- hideKeyboard
+- tapOn:
+    id: "device_form_save"
+- tapOn:
+    text: "Use it"
+    optional: true
+# Server up → the list dot is green (re-probed on the 8s poll, no refresh tap).
+- extendedWaitUntil:
+    visible:
+      text: "conn_dot_green"
+    timeout: 20000
+# Drop the data server → the poll flips the dot to red on its own.
+- runScript:
+    file: scripts/set_reachable.js
+    env:
+      CONTROL: "${CONTROL}"
+      UP: "false"
+    when:
+      true: ${MODE == 'mock'}
+- extendedWaitUntil:
+    visible:
+      text: "conn_dot_red"
+    timeout: 20000
+# Restore it → back to green, again with no manual refresh.
+- runScript:
+    file: scripts/set_reachable.js
+    env:
+      CONTROL: "${CONTROL}"
+      UP: "true"
+    when:
+      true: ${MODE == 'mock'}
+- extendedWaitUntil:
+    visible:
+      text: "conn_dot_green"
+    timeout: 20000

@@ -1,0 +1,20 @@
+# Download a drive, open it, and confirm the multi-cam player renders + responds.
+#
+# Args: NAME, IP, PORT (via -e) — forwarded to the nested drive_download flow.
+# The emulator may not decode HD ("Preparing HD…" can linger), so this asserts the
+# player UI mounts and the play toggle responds, not actual frame output.
+appId: org.sunnypilot.dashdown
+---
+- runFlow: drive_download.yaml
+# Open the (now-complete) drive. Select the first row by id pattern — no hardcoded key.
+- tapOn:
+    id: "drive_row_.*"
+- extendedWaitUntil:
+    visible:
+      id: "drive_detail_player"
+    timeout: 20000
+# Toggle playback; the player stays mounted (frames may or may not decode on an emulator).
+- tapOn:
+    id: "drive_play_toggle"
+- assertVisible:
+    id: "drive_detail_player"

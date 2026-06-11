@@ -1,7 +1,10 @@
 # Remove one device by NAME (taps the overflow on that row → Remove).
+#
+# Args: NAME (via -e). NOTE: no flow-level `env:` block — a flow `env:` shadows
+# CLI `-e` in Maestro (precedence: flow env: > -e > OS), so the block that used to
+# pin NAME=escape2020 here silently ignored `-e NAME=…`. Keep NAME overridable
+# from the harness/dd-ui.sh.
 appId: org.sunnypilot.dashdown
-env:
-  NAME: escape2020
 ---
 - launchApp
 - tapOn:

@@ -1,0 +1,67 @@
+# MOCK-ONLY. The drives list picks up a route added/removed on the server on its
+# own (20s foreground poll) — no pull-to-refresh. Mirrors the membership half of
+# Phase C as a black-box flow.
+#
+# Membership refresh works over adb reverse (it's an HTTP listing, not a TCP-drop
+# outage), so the device uses 127.0.0.1. Control-port steps self-gate to MODE==mock.
+#
+# Args: PORT (mock data port, reversed), CONTROL (control port), MODE (=mock).
+appId: org.sunnypilot.dashdown
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible:
+      id: "add_device_fab"
+    timeout: 15000
+- tapOn:
+    id: "add_device_fab"
+- tapOn:
+    id: "device_form_name"
+- inputText: "DriveList"
+- tapOn:
+    id: "device_form_hotspot_ip"
+- eraseText
+- inputText: "127.0.0.1"
+- tapOn:
+    id: "device_form_port"
+- eraseText
+- inputText: "${PORT}"
+- hideKeyboard
+- tapOn:
+    id: "device_form_save"
+- tapOn:
+    text: "Use it"
+    optional: true
+- tapOn:
+    text: "DriveList"
+# Baseline: the fixture's existing drive shows up after first-open sync.
+- extendedWaitUntil:
+    visible:
+      id: "drive_row_.*"
+    timeout: 20000
+# Add a NEW route on the server; the list polls every 20s and picks it up.
+- runScript:
+    file: scripts/add_drive.js
+    env:
+      CONTROL: "${CONTROL}"
+      ROUTE: "000009ee--maestroadd"
+      SEGS: "1"
+    when:
+      true: ${MODE == 'mock'}
+- extendedWaitUntil:
+    visible:
+      id: "drive_row_000009ee--maestroadd--0"
+    timeout: 35000
+# Remove it again; the row disappears on the next poll.
+- runScript:
+    file: scripts/remove_drive.js
+    env:
+      CONTROL: "${CONTROL}"
+      ROUTE: "000009ee--maestroadd"
+    when:
+      true: ${MODE == 'mock'}
+- extendedWaitUntil:
+    notVisible:
+      id: "drive_row_000009ee--maestroadd--0"
+    timeout: 35000

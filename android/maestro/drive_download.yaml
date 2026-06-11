@@ -1,51 +1,57 @@
-# Maestro happy-path acceptance flow for the Dashdown Android shell.
+# Add a device, sync, download the first drive, wait for completion.
 #
-# Prerequisites (host):
-#   cargo run -q -p mock-copyparty -- --fixture single_drive --port 8099 &
-#   adb reverse tcp:8099 tcp:8099
-#   adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+# Black-box acceptance for the core download path. Parameterized so it runs
+# against either the mock fixture (over adb reverse) or real hardware purely by
+# changing `-e` args — no hardcoded host/port/device-id.
 #
-# Run:  maestro test android/maestro/drive_download.yaml
-#
-# Selectors use Compose test tags exposed as resource-ids via `testTagsAsResourceId`
-# on the nav root. clearState wipes the index so the first device is id 1.
+# Args (via -e; tools/run-maestro-e2e.sh supplies them per MODE):
+#   NAME  device name        IP    copyparty host       PORT  copyparty port
+# Selectors use Compose test tags exposed as resource-ids via testTagsAsResourceId.
+# clearState gives a clean slate; the device row is selected by NAME (not an id),
+# so this never assumes "the first device is id 1".
 appId: org.sunnypilot.dashdown
 ---
 - launchApp:
     clearState: true
-# Wait for the device list (the FAB is present regardless of load state / cold core build).
+# The FAB is present regardless of load state / cold core build.
 - extendedWaitUntil:
     visible:
       id: "add_device_fab"
     timeout: 15000
 
-# Add a device pointing at the host fixture (reached via adb reverse).
+# Add a device pointing at the fixture / comma.
 - tapOn:
     id: "add_device_fab"
 - tapOn:
     id: "device_form_name"
-- inputText: "Mock Comma"
+- inputText: "${NAME}"
 - tapOn:
     id: "device_form_hotspot_ip"
 - eraseText
-- inputText: "127.0.0.1"
+- inputText: "${IP}"
 - tapOn:
     id: "device_form_port"
 - eraseText
-- inputText: "8099"
+- inputText: "${PORT}"
 - hideKeyboard
 - tapOn:
     id: "device_form_save"
-
-# Open the drives list. A fresh device auto-syncs online on first open.
+# Detected-dongle confirm dialog (only when reachable + Dongle ID left blank).
 - tapOn:
-    id: "device_row_1"
+    text: "Use it"
+    optional: true
+
+# Open this device's drives (by name — robust to the assigned id). A fresh device
+# auto-syncs online on first open; real hardware lists more drives, so allow time.
+- tapOn:
+    text: "${NAME}"
 - extendedWaitUntil:
     visible: "Download"
-    timeout: 20000
+    timeout: 30000
 
-# Download the first drive and wait for completion.
+# Download the first drive and wait for completion (generous timeout covers a
+# real-hardware transfer; the mock completes in well under a second).
 - tapOn: "Download"
 - extendedWaitUntil:
     visible: "Complete"
-    timeout: 30000
+    timeout: 120000
