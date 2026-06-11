@@ -1,0 +1,8 @@
+# Fresh install shows the empty-state prompt. Black-box, target-agnostic.
+appId: org.sunnypilot.dashdown
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "No devices yet. Tap + to add your Comma device."
+    timeout: 15000

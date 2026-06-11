@@ -1,0 +1,48 @@
+# A manual download survives the app being backgrounded mid-transfer: the
+# dataSync foreground service keeps the worker running off-screen, and the drive
+# is Complete when we come back.
+#
+# Args: NAME, IP, PORT (via -e).
+appId: org.sunnypilot.dashdown
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible:
+      id: "add_device_fab"
+    timeout: 15000
+- tapOn:
+    id: "add_device_fab"
+- tapOn:
+    id: "device_form_name"
+- inputText: "${NAME}"
+- tapOn:
+    id: "device_form_hotspot_ip"
+- eraseText
+- inputText: "${IP}"
+- tapOn:
+    id: "device_form_port"
+- eraseText
+- inputText: "${PORT}"
+- hideKeyboard
+- tapOn:
+    id: "device_form_save"
+- tapOn:
+    text: "Use it"
+    optional: true
+- tapOn:
+    text: "${NAME}"
+- extendedWaitUntil:
+    visible: "Download"
+    timeout: 30000
+# Start the download, then immediately background the app. The FGS keeps it going.
+- tapOn: "Download"
+- pressKey: Home
+# Resume (same install, no clearState) and confirm it finished while backgrounded.
+- launchApp
+- tapOn:
+    text: "${NAME}"
+    optional: true   # device list on cold resume; no-op if already on the drives screen
+- extendedWaitUntil:
+    visible: "Complete"
+    timeout: 120000

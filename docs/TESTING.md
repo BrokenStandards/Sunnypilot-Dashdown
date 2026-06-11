@@ -147,20 +147,93 @@ cd android && ./gradlew :app:connectedDebugAndroidTest \
 
 ---
 
-## 4. Maestro UI flows (real-device black-box)
+## 4. Maestro UI flows (black-box, mock + real hardware)
 
-Parameterized flows under `android/maestro/`, driven by `tools/dd-ui.sh` (sets JDK 17):
+Black-box Compose-UI acceptance flows under `android/maestro/`. They complement — don't replace —
+the instrumented tests in §3: the Phase C live-refresh behavior stays CI-guarded by
+`DotLiveRefreshTest` / `DriveListLiveRefreshTest`; these flows mirror that plus the read-only feature
+flows as black-box UI, run **locally and on the Pixel + comma**. **Not in CI** (Maestro can't
+`adb reverse` to a host control port from Maestro Cloud; a self-hosted-emulator step is a later option).
+
+### One command — `tools/run-maestro-e2e.sh`
+
+```bash
+# Full mock suite on the emulator (builds the APK + mock, reverses ports, installs, runs every flow):
+ANDROID_SERIAL=emulator-5554 tools/run-maestro-e2e.sh
+
+# A single flow (name, file, "all", or a directory all resolve):
+ANDROID_SERIAL=emulator-5554 tools/run-maestro-e2e.sh connectivity_refresh_mock
+
+# Real hardware against the comma (read-only) — explicit ANDROID_SERIAL is REQUIRED:
+ANDROID_SERIAL=192.168.1.210:5555 tools/run-maestro-e2e.sh drive_download IP=192.168.1.100 PORT=8080 MODE=real
+ANDROID_SERIAL=192.168.1.210:5555 tools/run-maestro-e2e.sh all IP=192.168.1.100 PORT=8080 MODE=real
+```
+
+Args: `[TARGET] [MODE=mock|real] [IP=…] [PORT=…] [NAME=…]`. Env knobs: `MOCK_PORT` (8099),
+`CONTROL_PORT` (8098), `FIXTURE` (single_drive).
+
+### Flows (`android/maestro/`)
+
+| Flow | Targets | Asserts |
+|---|---|---|
+| `empty_state` | both | fresh install shows "No devices yet…" |
+| `add_device` | both | add a device through the form (`-e NAME/IP/PORT/WIFI_IP`) |
+| `drive_download` | both | add → sync → download the first drive → "Complete" (device selected **by name**) |
+| `play_drive` | both | open a completed drive → the multi-cam player mounts + the play toggle responds |
+| `star_drive` | both | star a drive from the list → preserve icon flips `preserve_off`→`preserve_on` (local-only) |
+| `manual_download_close` | both | start a download, `Home` (background), relaunch → still reaches "Complete" (dataSync FGS) |
+| `remove_device` | both | remove one device by `-e NAME` (overflow → Remove) |
+| `clear_devices` | both | remove every device |
+| `connectivity_refresh_mock` | **mock** | dot flips green→red→green on the 8s poll as the server drops/restores — no refresh tap |
+| `drive_list_refresh_mock` | **mock** | a route added/removed on the server appears/disappears on the 20s poll — no refresh tap |
+
+### mock vs real
+
+| | mock (default) | real (`MODE=real`) |
+|---|---|---|
+| Device under test | host `mock-copyparty` fixture | the comma at `IP:PORT` (read-only) |
+| Data port | `127.0.0.1:$MOCK_PORT` over `adb reverse` (or `10.0.2.2` for `connectivity_refresh_mock`) | the comma's LAN IP, direct |
+| Control port | host `CONTROL_PORT`, driven by `runScript` → `http` (host-side) | not used — `*_mock` flows are excluded |
+| `ANDROID_SERIAL` | optional (first device) | **required** (never guesses) |
+| Suite run | all flows | bounded read-only set: `empty_state add_device drive_download play_drive star_drive remove_device` |
+
+**Real-hardware safety.** The comma serves a **read-only** copyparty volume — nothing in the app can
+delete or reconfigure it (retention prunes only the Pixel's local mirror; star writes a local SQLite
+flag). The only real risk is filling the Pixel, so the real suite downloads exactly **one** drive,
+previews-only (qcamera, the add-device default), with autoSync **off** (the default) — no 33-drive
+fan-out. Inspect the result with `tools/dd-db.sh drives`.
+
+### The `-e` contract + gotchas
+
+- Params: `NAME`, `IP`, `PORT`, `MODE` (mock|real), `CONTROL` (control port), `WIFI_IP`. The harness
+  passes all of them to every flow; unused ones are harmless.
+- **Never use a top-level flow `env:` block for an overridable var** — in Maestro a flow `env:`
+  **shadows** CLI `-e` (precedence: flow `env:` > `-e` > OS). `remove_device.yaml` had a
+  `env: { NAME: escape2020 }` block that silently ignored `-e NAME=…`; it was removed. Pass per-step
+  vars via a `runScript:` `env:` block instead (scoped, no shadowing).
+- `*_mock` flows gate their control-port steps `when: { true: "${MODE == 'mock'}" }`, so a stray real
+  run never POSTs to the comma (and the harness doesn't schedule them in real mode anyway).
+- **Red/green over `adb reverse` is masked** — a reverse tunnel accepts the device-side connect even
+  when the host listener is closed. `connectivity_refresh_mock` therefore points the **data** port at
+  the emulator host alias `10.0.2.2` (no reverse → a closed port is genuinely refused) while the
+  control port stays reversed. Emulator-only; same trick as `DotLiveRefreshTest`.
+- `runScript` runs **host-side** in Maestro's GraalJS engine; `scripts/{set_reachable,add_drive,
+  remove_drive}.js` POST to the control port over plain host loopback (`http.post(url, {body, headers})`,
+  body `JSON.stringify(...)`).
+
+### Single-flow launcher — `tools/dd-ui.sh`
+
+For one-off device setup (unchanged): `tools/dd-ui.sh <flow> [KEY=VAL …]` runs a single flow against
+the connected device (injects `PORT`/`WIFI_IP` defaults).
 
 ```bash
 tools/dd-ui.sh add_device NAME=escape2020 IP=192.168.1.100 [PORT=8080] [WIFI_IP=…]
 tools/dd-ui.sh remove_device NAME=escape2020
 tools/dd-ui.sh clear_devices
-# drive_download.yaml — happy-path add-device + download against the mock fixture
 ```
 
-After a flow, dump the screen once via mobile-mcp `list-elements` to read the end state.
-
-Inspect the on-device DB with `tools/dd-db.sh [devices|identity|drives|segments|schema|"<SQL>"]`.
+After a flow, dump the screen once via mobile-mcp `list-elements` to read the end state. Inspect the
+on-device DB with `tools/dd-db.sh [devices|identity|drives|segments|schema|"<SQL>"]`.
 
 ---
 

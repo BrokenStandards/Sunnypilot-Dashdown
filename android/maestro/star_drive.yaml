@@ -1,0 +1,15 @@
+# Download a drive, then star (preserve) it from the list. Local-only: preserve
+# writes a SQLite flag and never touches the comma.
+#
+# Args: NAME, IP, PORT (via -e) — forwarded to the nested drive_download flow.
+# The star button's icon carries contentDescription preserve_off / preserve_on.
+appId: org.sunnypilot.dashdown
+---
+- runFlow: drive_download.yaml
+# Star the first drive (its preserve button), then assert the icon flipped to "on".
+- tapOn:
+    id: "drive_preserve_.*"
+- extendedWaitUntil:
+    visible:
+      text: "preserve_on"
+    timeout: 10000
