@@ -555,7 +555,10 @@ private fun TileGrid(
     Box(
         Modifier.matchParentSize()
             .pointerInput(Unit) { detectTapGestures { onToggleControls() } }
-            .pointerInput(slots.size, boxes) {
+            // Key on `slots` (value-equal, so it only restarts when the order actually changes):
+            // the long-press callbacks capture `onReorder`/`boxes`, so a stale key would keep
+            // swapping against the original order and every drop after the first would be a no-op.
+            .pointerInput(slots, boxes) {
               detectDragGesturesAfterLongPress(
                   onDragStart = { pos ->
                     val idx = hit(pos)
