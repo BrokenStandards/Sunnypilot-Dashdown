@@ -107,7 +107,9 @@ fun DriveDetailRoute(deviceId: Long, driveKey: String, onBack: () -> Unit) {
       onDownload = { DownloadService.start(context, deviceId, driveKey) },
       onCancel = { DownloadService.cancel(context, driveKey) },
       onExport = { exportLauncher.launch("${state.drive?.routeId ?: "drive"}.zip") },
-      resolveHd = vm::ensurePlayable,
+      deviceId = deviceId,
+      driveKey = driveKey,
+      remuxBytes = repo::remuxHdBytes,
   )
 }
 
@@ -120,7 +122,9 @@ fun DriveDetailScreen(
     onDownload: () -> Unit,
     onCancel: () -> Unit,
     onExport: () -> Unit,
-    resolveHd: suspend (FileKind, UInt) -> String? = { _, _ -> null },
+    deviceId: Long = 0L,
+    driveKey: String = "",
+    remuxBytes: (Long, String, UInt, FileKind) -> ByteArray? = { _, _, _, _ -> null },
 ) {
   val drive = state.drive
   val downloading = live != null && live.terminal == null
@@ -144,7 +148,9 @@ fun DriveDetailScreen(
             status = status,
             downloading = downloading,
             live = live,
-            resolveHd = resolveHd,
+            deviceId = deviceId,
+            driveKey = driveKey,
+            remuxBytes = remuxBytes,
             onBack = onBack,
             onPreserve = onPreserve,
             onDownload = onDownload,
@@ -177,7 +183,9 @@ private fun ImmersivePlayer(
     status: SyncStatus,
     downloading: Boolean,
     live: DriveProgress?,
-    resolveHd: suspend (FileKind, UInt) -> String?,
+    deviceId: Long,
+    driveKey: String,
+    remuxBytes: (Long, String, UInt, FileKind) -> ByteArray?,
     onBack: () -> Unit,
     onPreserve: () -> Unit,
     onDownload: () -> Unit,
@@ -202,7 +210,9 @@ private fun ImmersivePlayer(
     MultiCamPlayer(
         qcamera = state.qcamera,
         hdCameras = state.hdCameras,
-        resolveHd = resolveHd,
+        deviceId = deviceId,
+        driveKey = driveKey,
+        remuxBytes = remuxBytes,
         modifier = Modifier.fillMaxSize(),
         onControlsVisibleChange = { chromeVisible = it },
     )

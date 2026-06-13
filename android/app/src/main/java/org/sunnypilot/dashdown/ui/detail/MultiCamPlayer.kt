@@ -76,6 +76,7 @@ import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import coil3.request.crossfade
@@ -109,16 +110,19 @@ private const val DEFAULT_SEGMENT_MS = 60_000L
  * Toggling a camera re-selects its renderer's track (same-frame, no seek) and frees/creates just
  * that HW decoder.
  *
- * HD cameras (road/wide/driver) are raw HEVC; each segment is remuxed to MP4 lazily on first enable
- * (via [resolveHd]) and then merged in — a tile shows a spinner until its first frame renders. The
- * always-present qcamera carries the audio (opt-in) and the drive timeline/filmstrip, and is the
- * preview tile when no HD camera is on.
+ * HD cameras (road/wide/driver) are raw HEVC; each segment is remuxed to MP4 **in memory, lazily**,
+ * by [HevcRemuxDataSource] as ExoPlayer reaches each window (no `.hevc.mp4` file is written) — a
+ * tile shows a spinner until its first frame renders, and opening/seeking starts at the current
+ * segment. The always-present qcamera carries the audio (opt-in) and the drive timeline/filmstrip,
+ * and is the preview tile when no HD camera is on.
  */
 @Composable
 fun MultiCamPlayer(
     qcamera: List<QSegment>,
     hdCameras: List<CameraTrack>,
-    resolveHd: suspend (FileKind, UInt) -> String?,
+    deviceId: Long,
+    driveKey: String,
+    remuxBytes: (Long, String, UInt, FileKind) -> ByteArray?,
     modifier: Modifier = Modifier,
     onControlsVisibleChange: (Boolean) -> Unit = {},
 ) {
@@ -138,11 +142,24 @@ fun MultiCamPlayer(
       }
   DisposableEffect(player) { onDispose { player.release() } }
 
-  // HD cameras included in the per-segment merges (grows on first enable). Kept in canonical order.
+  // HD source factory: each HD window is a ProgressiveMediaSource over an in-memory data source
+  // that
+  // remuxes that segment's raw HEVC to MP4 bytes on demand (no file written). The shared LRU lives
+  // here, so it's released when leaving the drive.
+  val hdSourceFactory =
+      remember(deviceId, driveKey) {
+        HevcRemuxDataSource.Factory(
+            HdRemuxer { d, key, seg, kindOrd ->
+              remuxBytes(d, key, seg.toUInt(), FileKind.entries[kindOrd])
+            },
+            HevcRemuxDataSource.lruMaxBytes(),
+        )
+      }
+
+  // HD cameras merged into the playlist (grow-only): adding a camera rebuilds the playlist to
+  // include its lazy sources; toggling one back off is a same-frame visibility change (no rebuild),
+  // so its source stays merged. Which tiles actually show is driven by `enabled`/`visible`.
   var mergedCams by remember(qcamera, hdCameras) { mutableStateOf(emptyList<CameraId>()) }
-  // Cache of remuxed MP4 paths: camera -> (segmentNum -> mp4 path). Plain cache (not observed).
-  val resolvedHd =
-      remember(qcamera, hdCameras) { mutableMapOf<CameraId, MutableMap<UInt, String>>() }
   var initialized by remember(qcamera, hdCameras) { mutableStateOf(false) }
 
   var enabled by remember(hdCameras) { mutableStateOf(defaultEnabled(hdCameras)) }
@@ -170,23 +187,36 @@ fun MultiCamPlayer(
 
   // Build the playlist: one source per segment (the merged cameras present for it + qcamera), with
   // the matching per-window video-slot layout for the selector. qcamera is added last so its video
-  // group follows the HD groups and its audio group feeds the audio renderer.
+  // group follows the HD groups and its audio group feeds the audio renderer. HD children are LAZY
+  // —
+  // a ProgressiveMediaSource over the in-memory remux data source — so building all windows is
+  // cheap
+  // and ExoPlayer only remuxes the windows the playhead reaches (current + look-ahead).
   fun buildWindows(): Pair<List<MediaSource>, List<List<VideoSlot>>> {
-    val mf = DefaultMediaSourceFactory(context)
-    fun src(path: String) = mf.createMediaSource(MediaItem.fromUri(Uri.fromFile(File(path))))
+    val qFactory = DefaultMediaSourceFactory(context)
+    val hdFactory = ProgressiveMediaSource.Factory(hdSourceFactory)
+    fun qsrc(path: String) = qFactory.createMediaSource(MediaItem.fromUri(Uri.fromFile(File(path))))
+    fun hdsrc(cam: CameraId, seg: UInt) =
+        hdFactory.createMediaSource(
+            MediaItem.fromUri(HdMediaUri.build(deviceId, driveKey, seg, cam.kind.ordinal)))
+    // Which segments each merged camera has downloaded (mirror presence), precomputed once.
+    val segsOf: Map<CameraId, Set<UInt>> =
+        mergedCams.associateWith { cam ->
+          hdCameras.firstOrNull { it.id == cam }?.segmentNums?.toSet() ?: emptySet()
+        }
     val windows = ArrayList<MediaSource>(qcamera.size)
     val layouts = ArrayList<List<VideoSlot>>(qcamera.size)
     for (q in qcamera) {
       val sources = ArrayList<MediaSource>()
-      for (cam in mergedCams) resolvedHd[cam]?.get(q.segmentNum)?.let { sources.add(src(it)) }
-      sources.add(src(q.path)) // qcamera last
+      for (cam in mergedCams) if (q.segmentNum in (segsOf[cam] ?: emptySet())) {
+        sources.add(hdsrc(cam, q.segmentNum))
+      }
+      sources.add(qsrc(q.path)) // qcamera last
       windows.add(
           if (sources.size == 1) sources[0]
           else MergingMediaSource(true, true, *sources.toTypedArray()))
       layouts.add(
-          windowVideoLayout(mergedCams, q.segmentNum) { c, s ->
-            resolvedHd[c]?.containsKey(s) == true
-          })
+          windowVideoLayout(mergedCams, q.segmentNum) { c, s -> s in (segsOf[c] ?: emptySet()) })
     }
     return windows to layouts
   }
@@ -205,32 +235,27 @@ fun MultiCamPlayer(
     positionMs = globalMs
   }
 
-  // React to the enabled set: on first run set up the qcamera-only playlist (instant timeline +
-  // audio + preview), then remux & merge any newly-enabled HD cameras (rebuilding the playlist
-  // while
-  // preserving position), and finally re-select tracks for the current visibility. Toggling an
-  // already-merged camera skips straight to reselection (instant, same-frame).
+  // React to the enabled set. There is no eager remux anymore: building the playlist just wires up
+  // lazy HD sources, so the player only remuxes the current window (+ look-ahead) and seeking
+  // starts
+  // at the seeked segment. First run merges the default-enabled camera so its current segment shows
+  // immediately; enabling another camera rebuilds the playlist to add its lazy sources, preserving
+  // position. Toggling a camera OFF stays a same-frame reselection (it remains merged but hidden).
   LaunchedEffect(enabled) {
     if (!initialized) {
+      mergedCams = enabled.sortedBy { it.ordinal }
       val (w, l) = buildWindows()
       selector.windowLayouts = l
       applyVisibility()
       player.setMediaSources(w)
       player.prepare()
       initialized = true
+      return@LaunchedEffect
     }
 
     val toMerge = enabled.filter { it !in mergedCams }
     if (toMerge.isNotEmpty()) {
-      for (cam in toMerge) {
-        val track = hdCameras.firstOrNull { it.id == cam } ?: continue
-        val map = resolvedHd.getOrPut(cam) { mutableMapOf() }
-        for (seg in track.segmentNums) {
-          if (seg in map) continue
-          resolveHd(cam.kind, seg)?.let { map[seg] = it }
-        }
-      }
-      // Rebuild the playlist with the newly-merged cameras, preserving the current position.
+      // Rebuild the playlist with the newly-merged cameras' lazy sources, preserving position.
       val savedIdx = player.currentMediaItemIndex
       val savedOff = player.currentPosition
       mergedCams = (mergedCams + toMerge).distinct().sortedBy { it.ordinal }

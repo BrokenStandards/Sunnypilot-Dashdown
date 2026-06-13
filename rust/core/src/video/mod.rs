@@ -44,6 +44,18 @@ pub fn ensure_playable_mp4(src: &Path) -> Result<PathBuf> {
     Ok(dst)
 }
 
+/// Remux the raw HEVC `src` to MP4 **in memory**, returning the bytes — no file is
+/// written (unlike [`ensure_playable_mp4`]). The output is byte-identical to what
+/// that function caches on disk; the player serves these bytes to ExoPlayer via a
+/// custom in-memory data source so the playable artifact never touches storage.
+///
+/// Synchronous and CPU/IO-bound (reads the whole `.hevc`, ~tens of MB) — callers
+/// must run it on a blocking pool/thread, never on an async executor thread.
+pub fn remux_hevc_to_mp4_bytes(src: &Path) -> Result<Vec<u8>> {
+    let input = std::fs::read(src)?;
+    remux::hevc_annexb_to_mp4(&input)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,5 +88,19 @@ mod tests {
         let mut part = src.as_os_str().to_owned();
         part.push(".mp4.part");
         assert!(!PathBuf::from(part).exists(), "no leftover .part");
+    }
+
+    #[test]
+    fn in_memory_bytes_match_written_file() {
+        // The in-memory remux must produce exactly what the on-disk path caches, so
+        // ExoPlayer sees identical input whether served from a file or from memory.
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("fcamera.hevc");
+        std::fs::write(&src, remux::minimal_stream()).unwrap();
+
+        let file_out = ensure_playable_mp4(&src).unwrap();
+        let from_file = std::fs::read(&file_out).unwrap();
+        let from_memory = remux_hevc_to_mp4_bytes(&src).unwrap();
+        assert_eq!(from_memory, from_file, "in-memory bytes == cached file");
     }
 }
