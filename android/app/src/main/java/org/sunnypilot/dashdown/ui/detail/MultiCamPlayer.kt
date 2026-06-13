@@ -8,9 +8,12 @@ import android.view.SurfaceView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -45,6 +48,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,12 +56,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Timeline
@@ -72,6 +81,7 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import coil3.video.videoFrameMillis
 import java.io.File
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import uniffi.dashdown_core.FileKind
 
@@ -152,8 +162,11 @@ fun MultiCamPlayer(
   // can show/hide its top chrome in lock-step.
   var controlsVisible by remember(qcamera, hdCameras) { mutableStateOf(true) }
   LaunchedEffect(controlsVisible) { onControlsVisibleChange(controlsVisible) }
+  // The user's drag-and-drop tile order (session-only); reconciled against the cameras currently
+  // visible, so toggling a camera on/off doesn't lose a manual arrangement.
+  var slotOrder by remember(qcamera, hdCameras) { mutableStateOf(emptyList<VideoSlot>()) }
 
-  val visible: List<VideoSlot> = visibleSlots(enabled)
+  val visible: List<VideoSlot> = orderedVisibleSlots(visibleSlots(enabled), slotOrder)
 
   // Build the playlist: one source per segment (the merged cameras present for it + qcamera), with
   // the matching per-window video-slot layout for the selector. qcamera is added last so its video
@@ -273,15 +286,14 @@ fun MultiCamPlayer(
         slots = visible,
         strategy = strategy,
         tileAspect = gridAspect,
-        modifier =
-            Modifier.fillMaxSize().testTag("drive_detail_player").pointerInput(Unit) {
-              detectTapGestures { controlsVisible = !controlsVisible }
-            },
+        onToggleControls = { controlsVisible = !controlsVisible },
+        onReorder = { from, to -> slotOrder = swapSlots(visible, from, to) },
+        modifier = Modifier.fillMaxSize().testTag("drive_detail_player"),
     ) { slot, tileModifier ->
       CameraTile(
           player = player,
           renderer = factory.videoRenderers[slot.rendererIndex],
-          label = if (slot is VideoSlot.Hd) slot.id.label else "Preview",
+          label = slotLabel(slot),
           // The qcamera preview is ready as soon as it renders; HD tiles wait for their first
           // frame.
           ready = ready[slot.rendererIndex] == true,
@@ -479,26 +491,61 @@ private fun CameraTile(
   }
 }
 
+/** Tile label: the HD camera's name, or "Preview" for the always-present qcamera tile. */
+private fun slotLabel(slot: VideoSlot): String =
+    if (slot is VideoSlot.Hd) slot.id.label else "Preview"
+
 /**
  * Place each slot at the rectangle [planTiles] computes for the available space, [strategy], and
  * [tileAspect] — tiles are sized to the video aspect and placed touching (no gaps between them).
  * `render` receives the slot and an aspect-sized modifier the surface fills.
+ *
+ * Gestures live on one transparent layer above the tiles: a tap toggles the controls
+ * ([onToggleControls]); a long-press lifts the tile under the finger and, on release over another
+ * tile, calls [onReorder] to swap them. The live [SurfaceView]s never move during a drag (a moving
+ * surface punches through overlays) — a lightweight labeled placeholder floats under the finger
+ * instead, and hit-testing uses the engine's px rects so it works for GRID and FEATURE alike.
  */
 @Composable
 private fun TileGrid(
     slots: List<VideoSlot>,
     strategy: TileStrategy,
     tileAspect: Float,
+    onToggleControls: () -> Unit,
+    onReorder: (Int, Int) -> Unit,
     modifier: Modifier = Modifier,
     render: @Composable (VideoSlot, Modifier) -> Unit,
 ) {
   BoxWithConstraints(modifier) {
+    val density = LocalDensity.current
+    val haptics = LocalHapticFeedback.current
     val w = maxWidth
     val h = maxHeight
+    val wPx = with(density) { w.toPx() }
+    val hPx = with(density) { h.toPx() }
     val boxes =
-        remember(slots.size, w, h, strategy, tileAspect) {
-          planTiles(slots.size, w.value, h.value, tileAspect, strategy)
+        remember(slots.size, wPx, hPx, strategy, tileAspect) {
+          planTiles(slots.size, wPx, hPx, tileAspect, strategy)
         }
+
+    // Latest geometry/order read from inside the long-lived gesture coroutine *without* restarting
+    // it. The drag pointerInput is keyed on Unit (never restarts), so an in-progress drag is never
+    // stranded mid-gesture; these holders make each callback see the current rects, tile count, and
+    // reorder callback. (Keying the gesture on a changing value instead let a drop compute against
+    // a
+    // stale snapshot — swapping the wrong tiles, or no-op after the first swap.)
+    val hit =
+        rememberUpdatedState<(Offset) -> Int> { p ->
+          boxes.indexOfFirst {
+            val x0 = it.xFrac * wPx
+            val y0 = it.yFrac * hPx
+            p.x in x0..(x0 + it.wFrac * wPx) && p.y in y0..(y0 + it.hFrac * hPx)
+          }
+        }
+    val tileCount = rememberUpdatedState(slots.size)
+    val reorder = rememberUpdatedState(onReorder)
+
+    // Live tiles, each pinned to its engine rect. Untouched during a drag.
     slots.forEachIndexed { i, slot ->
       val b = boxes.getOrElse(i) { boxes.last() }
       key(slot.rendererIndex) {
@@ -507,6 +554,89 @@ private fun TileGrid(
             Modifier.offset(x = w * b.xFrac, y = h * b.yFrac)
                 .size(width = w * b.wFrac, height = h * b.hFrac),
         )
+      }
+    }
+
+    var dragIndex by remember { mutableStateOf(-1) }
+    var targetIndex by remember { mutableStateOf(-1) }
+    var fingerPx by remember { mutableStateOf(Offset.Zero) }
+
+    // One gesture layer over everything: tap → toggle controls; long-press + drag → reorder.
+    Box(
+        Modifier.matchParentSize()
+            .pointerInput(Unit) { detectTapGestures { onToggleControls() } }
+            .pointerInput(Unit) {
+              detectDragGesturesAfterLongPress(
+                  onDragStart = { pos ->
+                    val idx = hit.value(pos)
+                    if (idx >= 0 && tileCount.value > 1) {
+                      dragIndex = idx
+                      targetIndex = idx
+                      fingerPx = pos
+                      haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    }
+                  },
+                  onDrag = { change, _ ->
+                    if (dragIndex >= 0) {
+                      change.consume()
+                      fingerPx = change.position
+                      targetIndex = hit.value(change.position)
+                    }
+                  },
+                  onDragEnd = {
+                    val n = tileCount.value
+                    // Bounds-guard: a stale index can never swap the wrong (or a vanished) tile.
+                    if (dragIndex in 0 until n &&
+                        targetIndex in 0 until n &&
+                        targetIndex != dragIndex) {
+                      reorder.value(dragIndex, targetIndex)
+                      haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    }
+                    dragIndex = -1
+                    targetIndex = -1
+                  },
+                  onDragCancel = {
+                    dragIndex = -1
+                    targetIndex = -1
+                  },
+              )
+            },
+    )
+
+    // Drag affordances: dim the lifted tile, outline the drop target, and float a labeled
+    // placeholder under the finger (a regular view, so it composites above the SurfaceViews).
+    if (dragIndex >= 0) {
+      val src = boxes.getOrElse(dragIndex) { boxes.last() }
+      Box(
+          Modifier.offset(x = w * src.xFrac, y = h * src.yFrac)
+              .size(width = w * src.wFrac, height = h * src.hFrac)
+              .background(Color.Black.copy(alpha = 0.5f)))
+      if (targetIndex >= 0 && targetIndex != dragIndex) {
+        val tgt = boxes.getOrElse(targetIndex) { boxes.last() }
+        Box(
+            Modifier.offset(x = w * tgt.xFrac, y = h * tgt.yFrac)
+                .size(width = w * tgt.wFrac, height = h * tgt.hFrac)
+                .border(BorderStroke(3.dp, Color.White)))
+      }
+      val pw = w * src.wFrac
+      val ph = h * src.hFrac
+      val pwPx = with(density) { pw.toPx() }
+      val phPx = with(density) { ph.toPx() }
+      Box(
+          Modifier.zIndex(1f)
+              .offset {
+                IntOffset(
+                    (fingerPx.x - pwPx / 2f).roundToInt(), (fingerPx.y - phPx / 2f).roundToInt())
+              }
+              .size(width = pw, height = ph)
+              .background(Color.Black.copy(alpha = 0.7f))
+              .border(BorderStroke(2.dp, Color.White)),
+          contentAlignment = Alignment.Center,
+      ) {
+        Text(
+            slotLabel(slots[dragIndex]),
+            color = Color.White,
+            style = MaterialTheme.typography.titleMedium)
       }
     }
   }

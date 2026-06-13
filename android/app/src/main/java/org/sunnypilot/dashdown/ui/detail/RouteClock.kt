@@ -83,5 +83,30 @@ fun visibleSlots(enabled: Set<CameraId>): List<VideoSlot> {
   return hd.ifEmpty { listOf(VideoSlot.QcamVideo) }
 }
 
+/**
+ * Apply the user's drag-and-drop [preferred] order to the currently-[visible] slots. Slots the user
+ * has placed keep that relative order; any newly-visible slot not in [preferred] (e.g. a camera
+ * just toggled on) is appended in canonical order; slots no longer visible are dropped. Because
+ * each slot maps to a fixed renderer, this only permutes tile positions — the
+ * camera↔renderer↔surface wiring is untouched. Pure so the reorder logic is unit-testable.
+ */
+fun orderedVisibleSlots(visible: List<VideoSlot>, preferred: List<VideoSlot>): List<VideoSlot> {
+  val kept = preferred.filter { it in visible }
+  val appended = visible.filter { it !in kept }
+  return kept + appended
+}
+
+/**
+ * Swap the slots at [i] and [j] — the drop reducer for drag-and-drop tile reordering. An equal or
+ * out-of-range index pair returns [order] unchanged.
+ */
+fun swapSlots(order: List<VideoSlot>, i: Int, j: Int): List<VideoSlot> {
+  if (i == j || i !in order.indices || j !in order.indices) return order
+  return order.toMutableList().apply {
+    this[i] = order[j]
+    this[j] = order[i]
+  }
+}
+
 // Tile arrangement now lives in TileLayout.kt (`planTiles`), which sizes each tile from the video
 // aspect ratio and the device's available space instead of a fixed per-count plan.
