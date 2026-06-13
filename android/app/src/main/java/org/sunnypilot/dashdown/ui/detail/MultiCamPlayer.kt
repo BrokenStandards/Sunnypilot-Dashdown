@@ -48,6 +48,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -527,13 +528,22 @@ private fun TileGrid(
           planTiles(slots.size, wPx, hPx, tileAspect, strategy)
         }
 
-    // Index of the tile whose px rect contains [p], or -1 (e.g. a long-press on a black margin).
-    fun hit(p: Offset): Int =
-        boxes.indexOfFirst {
-          val x0 = it.xFrac * wPx
-          val y0 = it.yFrac * hPx
-          p.x in x0..(x0 + it.wFrac * wPx) && p.y in y0..(y0 + it.hFrac * hPx)
+    // Latest geometry/order read from inside the long-lived gesture coroutine *without* restarting
+    // it. The drag pointerInput is keyed on Unit (never restarts), so an in-progress drag is never
+    // stranded mid-gesture; these holders make each callback see the current rects, tile count, and
+    // reorder callback. (Keying the gesture on a changing value instead let a drop compute against
+    // a
+    // stale snapshot — swapping the wrong tiles, or no-op after the first swap.)
+    val hit =
+        rememberUpdatedState<(Offset) -> Int> { p ->
+          boxes.indexOfFirst {
+            val x0 = it.xFrac * wPx
+            val y0 = it.yFrac * hPx
+            p.x in x0..(x0 + it.wFrac * wPx) && p.y in y0..(y0 + it.hFrac * hPx)
+          }
         }
+    val tileCount = rememberUpdatedState(slots.size)
+    val reorder = rememberUpdatedState(onReorder)
 
     // Live tiles, each pinned to its engine rect. Untouched during a drag.
     slots.forEachIndexed { i, slot ->
@@ -555,14 +565,11 @@ private fun TileGrid(
     Box(
         Modifier.matchParentSize()
             .pointerInput(Unit) { detectTapGestures { onToggleControls() } }
-            // Key on `slots` (value-equal, so it only restarts when the order actually changes):
-            // the long-press callbacks capture `onReorder`/`boxes`, so a stale key would keep
-            // swapping against the original order and every drop after the first would be a no-op.
-            .pointerInput(slots, boxes) {
+            .pointerInput(Unit) {
               detectDragGesturesAfterLongPress(
                   onDragStart = { pos ->
-                    val idx = hit(pos)
-                    if (idx >= 0 && slots.size > 1) {
+                    val idx = hit.value(pos)
+                    if (idx >= 0 && tileCount.value > 1) {
                       dragIndex = idx
                       targetIndex = idx
                       fingerPx = pos
@@ -573,12 +580,16 @@ private fun TileGrid(
                     if (dragIndex >= 0) {
                       change.consume()
                       fingerPx = change.position
-                      targetIndex = hit(change.position)
+                      targetIndex = hit.value(change.position)
                     }
                   },
                   onDragEnd = {
-                    if (dragIndex >= 0 && targetIndex >= 0 && targetIndex != dragIndex) {
-                      onReorder(dragIndex, targetIndex)
+                    val n = tileCount.value
+                    // Bounds-guard: a stale index can never swap the wrong (or a vanished) tile.
+                    if (dragIndex in 0 until n &&
+                        targetIndex in 0 until n &&
+                        targetIndex != dragIndex) {
+                      reorder.value(dragIndex, targetIndex)
                       haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     }
                     dragIndex = -1
