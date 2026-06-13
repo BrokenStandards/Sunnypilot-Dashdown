@@ -15,9 +15,10 @@ import uniffi.dashdown_core.SegmentName
 import uniffi.dashdown_core.SyncStatus
 
 /**
- * Step-6 Compose test for the stateless drive-detail screen. Renders with no playable media so the
- * ExoPlayer isn't instantiated; verifies the header, the download + export actions, and the
- * segment/file listing.
+ * Compose test for the stateless drive-detail screen. Renders with no playable media so the
+ * ExoPlayer isn't instantiated and the pre-download info screen shows; verifies the header, the
+ * sync-status line, and the download + export actions. (The natural-tiling player removed the
+ * segment/file listing — playback now fills the screen instead.)
  */
 class DriveDetailScreenTest {
   @get:Rule val rule = createComposeRule()
@@ -51,7 +52,7 @@ class DriveDetailScreenTest {
   }
 
   @Test
-  fun rendersHeaderActionsAndFiles() {
+  fun rendersHeaderStatusAndActions() {
     val drive = sampleDrive()
     val status = DriveSyncStatus(drive.driveKey, SyncStatus.NOT_DOWNLOADED, 0u, 1u, 0u, 1200u, null)
     rule.setContent {
@@ -72,6 +73,7 @@ class DriveDetailScreenTest {
     rule.onNodeWithText("000001a3--c20ba54385").assertExists()
     rule.onNodeWithTag("drive_detail_download_btn").assertExists()
     rule.onNodeWithTag("drive_detail_export_btn").assertExists()
-    rule.onNodeWithText("qcamera.ts", substring = true).assertExists()
+    // Pre-download info screen shows the sync-status line (no segment/file listing anymore).
+    rule.onNodeWithText("not_downloaded", substring = true).assertExists()
   }
 }

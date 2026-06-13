@@ -5,17 +5,22 @@ package org.sunnypilot.dashdown.ui.detail
 import android.net.Uri
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
@@ -46,8 +51,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -71,6 +77,14 @@ import uniffi.dashdown_core.FileKind
 
 private const val FILMSTRIP_TICKS = 12
 private const val TICK_MS = 100L
+
+// Auto-hide the immersive controls this long after they appear while playing.
+private const val CONTROLS_HIDE_MS = 3500L
+
+// Representative camera aspect (comma cameras ≈ 1928×1208) used to size the tiles before the first
+// frame reports the exact aspect; the tiles are then sized to it so the surfaces fill them with no
+// gaps and no stretch.
+private const val DEFAULT_TILE_ASPECT = 1928f / 1208f
 
 // openpilot writes ~60 s segments. ExoPlayer reports a window's duration only once that segment
 // buffers, so unbuffered windows read C.TIME_UNSET; we fall back to this estimate so the scrubber
@@ -96,10 +110,9 @@ fun MultiCamPlayer(
     hdCameras: List<CameraTrack>,
     resolveHd: suspend (FileKind, UInt) -> String?,
     modifier: Modifier = Modifier,
+    onControlsVisibleChange: (Boolean) -> Unit = {},
 ) {
   val context = LocalContext.current
-  val landscape =
-      LocalConfiguration.current.screenWidthDp > LocalConfiguration.current.screenHeightDp
 
   // One player, built once: N video renderers (MultiRenderersFactory) + a custom selector that
   // routes one merged video group to each renderer (per window). Released on dispose.
@@ -130,6 +143,15 @@ fun MultiCamPlayer(
   var hasAudio by remember(player) { mutableStateOf(false) }
   // Per-renderer readiness (first frame rendered) — drives each tile's "Preparing HD…" spinner.
   val ready = remember(qcamera, hdCameras) { mutableStateMapOf<Int, Boolean>() }
+  // Per-renderer decoded display aspect (w/h), reported on first frame — sizes the tiles exactly.
+  val tileAspect = remember(qcamera, hdCameras) { mutableStateMapOf<Int, Float>() }
+  // Tiling strategy: auto-default is the area-maximizing grid; the user can cycle to FEATURE.
+  var strategy by remember(qcamera, hdCameras) { mutableStateOf(DEFAULT_TILE_STRATEGY) }
+  // Immersive controls: tap the video to reveal; auto-hides while playing. Reported up so the
+  // screen
+  // can show/hide its top chrome in lock-step.
+  var controlsVisible by remember(qcamera, hdCameras) { mutableStateOf(true) }
+  LaunchedEffect(controlsVisible) { onControlsVisibleChange(controlsVisible) }
 
   val visible: List<VideoSlot> = visibleSlots(enabled)
 
@@ -216,22 +238,46 @@ fun MultiCamPlayer(
       totalMs = windows.sum()
       positionMs = globalPosition(windows, player.currentMediaItemIndex, player.currentPosition)
       hasAudio = selector.sawAudio
-      for (i in 0 until VIDEO_RENDERER_COUNT) ready[i] = factory.stats[i].firstFrameRendered
+      for (i in 0 until VIDEO_RENDERER_COUNT) {
+        ready[i] = factory.stats[i].firstFrameRendered
+        factory.stats[i].displayAspect().let { if (it > 0f) tileAspect[i] = it }
+      }
       delay(TICK_MS)
     }
   }
 
-  Column(modifier) {
-    if (qcamera.isEmpty() && hdCameras.isEmpty()) {
-      Text("No playable video downloaded", Modifier.padding(16.dp))
-      return@Column
+  // Auto-hide the controls a few seconds after they appear while playing; any tap re-reveals them.
+  LaunchedEffect(controlsVisible, playing) {
+    if (controlsVisible && playing) {
+      delay(CONTROLS_HIDE_MS)
+      controlsVisible = false
     }
+  }
 
+  if (qcamera.isEmpty() && hdCameras.isEmpty()) {
+    Box(modifier, contentAlignment = Alignment.Center) {
+      Text("No playable video downloaded", Modifier.padding(16.dp))
+    }
+    return
+  }
+
+  Box(modifier.background(Color.Black)) {
+    // Tiles fill the whole area (letterboxed, never cropped); tapping the video toggles the
+    // controls.
+    // Size all tiles to one representative aspect (the primary tile's, once known) so they tile
+    // edge-to-edge with no gaps; comma cameras are uniform so this is also their true aspect.
+    val gridAspect =
+        visible.firstOrNull()?.let { tileAspect[it.rendererIndex] }?.takeIf { it > 0f }
+            ?: DEFAULT_TILE_ASPECT
     TileGrid(
         slots = visible,
-        plan = tilePlan(visible.size, landscape),
-        modifier = Modifier.fillMaxWidth().testTag("drive_detail_player"),
-    ) { slot ->
+        strategy = strategy,
+        tileAspect = gridAspect,
+        modifier =
+            Modifier.fillMaxSize().testTag("drive_detail_player").pointerInput(Unit) {
+              detectTapGestures { controlsVisible = !controlsVisible }
+            },
+    ) { slot, tileModifier ->
       CameraTile(
           player = player,
           renderer = factory.videoRenderers[slot.rendererIndex],
@@ -239,85 +285,112 @@ fun MultiCamPlayer(
           // The qcamera preview is ready as soon as it renders; HD tiles wait for their first
           // frame.
           ready = ready[slot.rendererIndex] == true,
+          modifier = tileModifier,
       )
     }
 
-    // Camera toggle bar (only the HD cameras downloaded for this drive).
-    if (hdCameras.isNotEmpty()) {
-      Row(
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
-          modifier = Modifier.fillMaxWidth().padding(top = 8.dp).testTag("camera_toggles"),
-      ) {
-        hdCameras.forEach { track ->
-          FilterChip(
-              selected = track.id in enabled,
-              onClick = {
-                enabled = if (track.id in enabled) enabled - track.id else enabled + track.id
-              },
-              label = { Text(track.id.label) },
-              modifier = Modifier.testTag("camera_toggle_${track.id.label.lowercase()}"),
-          )
-        }
-      }
-    }
-
-    // Transport: play/pause, clock label, audio toggle.
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+    // Tap-to-reveal control overlay, pinned to the bottom over a legibility scrim.
+    AnimatedVisibility(
+        visible = controlsVisible,
+        enter = fadeIn(),
+        exit = fadeOut(),
+        modifier = Modifier.align(Alignment.BottomCenter),
     ) {
-      IconButton(
-          onClick = {
-            playing = !playing
-            player.playWhenReady = playing
-          },
-          modifier = Modifier.testTag("drive_play_toggle"),
+      Column(
+          Modifier.fillMaxWidth()
+              .background(Color.Black.copy(alpha = 0.45f))
+              .padding(horizontal = 12.dp, vertical = 8.dp),
       ) {
-        if (playing) {
-          val barColor = LocalContentColor.current
-          Canvas(Modifier.size(20.dp)) {
-            val barW = size.width * 0.24f
-            val h = size.height * 0.78f
-            val top = (size.height - h) / 2f
-            val gap = size.width * 0.16f
-            drawRect(
-                barColor,
-                topLeft = Offset(size.width / 2f - gap / 2f - barW, top),
-                size = Size(barW, h))
-            drawRect(
-                barColor, topLeft = Offset(size.width / 2f + gap / 2f, top), size = Size(barW, h))
+        // Camera toggles (downloaded HD cameras) + the layout-strategy cycle.
+        if (hdCameras.isNotEmpty()) {
+          Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+              modifier = Modifier.fillMaxWidth().testTag("camera_toggles"),
+          ) {
+            hdCameras.forEach { track ->
+              FilterChip(
+                  selected = track.id in enabled,
+                  onClick = {
+                    enabled = if (track.id in enabled) enabled - track.id else enabled + track.id
+                  },
+                  label = { Text(track.id.label) },
+                  modifier = Modifier.testTag("camera_toggle_${track.id.label.lowercase()}"),
+              )
+            }
+            Spacer(Modifier.weight(1f))
+            if (visible.size > 1) {
+              FilterChip(
+                  selected = false,
+                  onClick = { strategy = strategy.next() },
+                  label = { Text(if (strategy == TileStrategy.FEATURE) "Feature" else "Grid") },
+                  modifier = Modifier.testTag("drive_layout_toggle"),
+              )
+            }
           }
-        } else {
-          Icon(Icons.Filled.PlayArrow, contentDescription = "play")
+        }
+
+        // Transport: play/pause, clock label, audio toggle.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        ) {
+          IconButton(
+              onClick = {
+                playing = !playing
+                player.playWhenReady = playing
+              },
+              modifier = Modifier.testTag("drive_play_toggle"),
+          ) {
+            if (playing) {
+              val barColor = LocalContentColor.current
+              Canvas(Modifier.size(20.dp)) {
+                val barW = size.width * 0.24f
+                val h = size.height * 0.78f
+                val top = (size.height - h) / 2f
+                val gap = size.width * 0.16f
+                drawRect(
+                    barColor,
+                    topLeft = Offset(size.width / 2f - gap / 2f - barW, top),
+                    size = Size(barW, h))
+                drawRect(
+                    barColor,
+                    topLeft = Offset(size.width / 2f + gap / 2f, top),
+                    size = Size(barW, h))
+              }
+            } else {
+              Icon(Icons.Filled.PlayArrow, contentDescription = "play")
+            }
+          }
+          Text(
+              "${fmtTime(positionMs)} / ${fmtTime(totalMs)}",
+              style = MaterialTheme.typography.bodySmall)
+          Spacer(Modifier.weight(1f))
+          if (hasAudio) {
+            FilterChip(
+                selected = audioOn,
+                onClick = {
+                  audioOn = !audioOn
+                  applyVisibility() // audio is a track selection on the same clock — no seek
+                },
+                label = { Text("Audio") },
+                modifier = Modifier.testTag("drive_audio_toggle"),
+            )
+          }
+        }
+
+        Slider(
+            value = if (totalMs > 0) positionMs.toFloat().coerceIn(0f, totalMs.toFloat()) else 0f,
+            valueRange = 0f..totalMs.coerceAtLeast(1L).toFloat(),
+            enabled = totalMs > 0,
+            onValueChange = { v -> seekGlobal(v.toLong()) },
+            modifier = Modifier.fillMaxWidth().testTag("drive_scrubber"),
+        )
+
+        if (totalMs > 0 && qcamera.isNotEmpty()) {
+          Filmstrip(qcamera.map { it.path }, windowsOf(player), totalMs) { t -> seekGlobal(t) }
         }
       }
-      Text(
-          "${fmtTime(positionMs)} / ${fmtTime(totalMs)}",
-          style = MaterialTheme.typography.bodySmall)
-      Spacer(Modifier.weight(1f))
-      if (hasAudio) {
-        FilterChip(
-            selected = audioOn,
-            onClick = {
-              audioOn = !audioOn
-              applyVisibility() // audio is a track selection on the same clock — no seek, no glitch
-            },
-            label = { Text("Audio") },
-            modifier = Modifier.testTag("drive_audio_toggle"),
-        )
-      }
-    }
-
-    Slider(
-        value = if (totalMs > 0) positionMs.toFloat().coerceIn(0f, totalMs.toFloat()) else 0f,
-        valueRange = 0f..totalMs.coerceAtLeast(1L).toFloat(),
-        enabled = totalMs > 0,
-        onValueChange = { v -> seekGlobal(v.toLong()) },
-        modifier = Modifier.fillMaxWidth().testTag("drive_scrubber"),
-    )
-
-    if (totalMs > 0 && qcamera.isNotEmpty()) {
-      Filmstrip(qcamera.map { it.path }, windowsOf(player), totalMs) { t -> seekGlobal(t) }
     }
   }
 }
@@ -342,7 +415,9 @@ private fun windowsOf(player: ExoPlayer): LongArray {
 }
 
 /**
- * A single camera surface (its own renderer) with a label and a "preparing" spinner until ready.
+ * A single camera surface (its own renderer) filling its box, with a label and a "preparing"
+ * spinner until ready. The box is already sized to the video aspect by [TileGrid]/[planTiles], so
+ * the surface fills it exactly — no crop, no stretch, and no letterbox gap between adjacent tiles.
  */
 @Composable
 private fun CameraTile(
@@ -352,16 +427,11 @@ private fun CameraTile(
     ready: Boolean,
     modifier: Modifier = Modifier,
 ) {
-  Box(
-      modifier
-          .fillMaxWidth()
-          .aspectRatio(16f / 9f)
-          .background(MaterialTheme.colorScheme.surfaceVariant)
-          .testTag("drive_tile_${label.lowercase()}"),
-  ) {
+  Box(modifier.background(Color.Black).testTag("drive_tile_${label.lowercase()}")) {
     AndroidView(
         // Raw SurfaceView routed to THIS renderer (not PlayerView, whose setVideoSurface would
         // broadcast to every video renderer). Re-routes on surface (re)creation, e.g. rotation.
+        // Fills the box; the box already has the video's aspect, so the frame is undistorted.
         factory = { ctx ->
           SurfaceView(ctx).apply {
             holder.addCallback(
@@ -409,50 +479,34 @@ private fun CameraTile(
   }
 }
 
-/** Arrange `slots` per [plan] using nested rows/columns; `render` draws each tile. */
+/**
+ * Place each slot at the rectangle [planTiles] computes for the available space, [strategy], and
+ * [tileAspect] — tiles are sized to the video aspect and placed touching (no gaps between them).
+ * `render` receives the slot and an aspect-sized modifier the surface fills.
+ */
 @Composable
 private fun TileGrid(
     slots: List<VideoSlot>,
-    plan: TilePlan,
+    strategy: TileStrategy,
+    tileAspect: Float,
     modifier: Modifier = Modifier,
-    render: @Composable (VideoSlot) -> Unit,
+    render: @Composable (VideoSlot, Modifier) -> Unit,
 ) {
-  Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-    when (plan) {
-      TilePlan.SINGLE -> key(slots[0].rendererIndex) { render(slots[0]) }
-      TilePlan.STACK2 -> {
-        key(slots[0].rendererIndex) { render(slots[0]) }
-        key(slots[1].rendererIndex) { render(slots[1]) }
-      }
-      TilePlan.ROW2 ->
-          Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            Box(Modifier.weight(1f)) { key(slots[0].rendererIndex) { render(slots[0]) } }
-            Box(Modifier.weight(1f)) { key(slots[1].rendererIndex) { render(slots[1]) } }
-          }
-      TilePlan.PRIMARY_BOTTOM2 -> {
-        key(slots[0].rendererIndex) { render(slots[0]) }
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-          Box(Modifier.weight(1f)) { key(slots[1].rendererIndex) { render(slots[1]) } }
-          Box(Modifier.weight(1f)) { key(slots[2].rendererIndex) { render(slots[2]) } }
+  BoxWithConstraints(modifier) {
+    val w = maxWidth
+    val h = maxHeight
+    val boxes =
+        remember(slots.size, w, h, strategy, tileAspect) {
+          planTiles(slots.size, w.value, h.value, tileAspect, strategy)
         }
-      }
-      TilePlan.PRIMARY_RIGHT2 ->
-          Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            Box(Modifier.weight(2f)) { key(slots[0].rendererIndex) { render(slots[0]) } }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-              key(slots[1].rendererIndex) { render(slots[1]) }
-              key(slots[2].rendererIndex) { render(slots[2]) }
-            }
-          }
-      TilePlan.GRID4 -> {
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-          Box(Modifier.weight(1f)) { key(slots[0].rendererIndex) { render(slots[0]) } }
-          Box(Modifier.weight(1f)) { key(slots[1].rendererIndex) { render(slots[1]) } }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-          Box(Modifier.weight(1f)) { key(slots[2].rendererIndex) { render(slots[2]) } }
-          Box(Modifier.weight(1f)) { key(slots[3].rendererIndex) { render(slots[3]) } }
-        }
+    slots.forEachIndexed { i, slot ->
+      val b = boxes.getOrElse(i) { boxes.last() }
+      key(slot.rendererIndex) {
+        render(
+            slot,
+            Modifier.offset(x = w * b.xFrac, y = h * b.yFrac)
+                .size(width = w * b.wFrac, height = h * b.hFrac),
+        )
       }
     }
   }

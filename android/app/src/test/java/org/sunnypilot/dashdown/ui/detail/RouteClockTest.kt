@@ -8,36 +8,6 @@ import org.junit.Test
 class RouteClockTest {
 
   @Test
-  fun tilePlanSingle() {
-    assertEquals(TilePlan.SINGLE, tilePlan(1, landscape = false))
-    assertEquals(TilePlan.SINGLE, tilePlan(1, landscape = true))
-  }
-
-  @Test
-  fun tilePlanTwoDependsOnOrientation() {
-    assertEquals(TilePlan.STACK2, tilePlan(2, landscape = false))
-    assertEquals(TilePlan.ROW2, tilePlan(2, landscape = true))
-  }
-
-  @Test
-  fun tilePlanThreeIsPrimaryPlusTwo() {
-    assertEquals(TilePlan.PRIMARY_BOTTOM2, tilePlan(3, landscape = false))
-    assertEquals(TilePlan.PRIMARY_RIGHT2, tilePlan(3, landscape = true))
-  }
-
-  @Test
-  fun tilePlanFourIsGrid() {
-    assertEquals(TilePlan.GRID4, tilePlan(4, landscape = false))
-    assertEquals(TilePlan.GRID4, tilePlan(4, landscape = true))
-  }
-
-  @Test
-  fun tilePlanClampsOutOfRange() {
-    assertEquals(TilePlan.SINGLE, tilePlan(0, landscape = false))
-    assertEquals(TilePlan.GRID4, tilePlan(9, landscape = true))
-  }
-
-  @Test
   fun camerasPinToStableRenderers() {
     // The toggle bar covers exactly the three HD cameras, each on a distinct, fixed renderer.
     assertEquals(3, CameraId.entries.size)
