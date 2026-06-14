@@ -26,19 +26,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -86,7 +81,6 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import uniffi.dashdown_core.FileKind
 
-private const val FILMSTRIP_TICKS = 12
 private const val TICK_MS = 100L
 
 // Auto-hide the immersive controls this long after they appear while playing.
@@ -105,6 +99,10 @@ private const val DEFAULT_SEGMENT_MS = 60_000L
 // Seeking to within this much of a window's end prewarms the next segment's remux into the LRU, so
 // crossing the boundary right after the seek is a cache hit (seamless) rather than a stall.
 private const val PREWARM_TAIL_MS = 8_000L
+
+// In-memory budget for decoded scrub-bar thumbnails (qcamera frames ≈ 147 KB each at 256×144);
+// modest so it coexists with the 80–256 MB remux LRU under largeHeap.
+private const val THUMB_CACHE_BYTES = 24 * 1024 * 1024
 
 /**
  * The **multi-camera, drive-wide** player. ONE [ExoPlayer] drives N video renderers (one per camera
@@ -168,6 +166,11 @@ fun MultiCamPlayer(
   // this never drops the cache (which would re-introduce the churn the player itself avoids).
   LaunchedEffect(hdCameras.size) { hdSourceFactory.resize(lruMaxBytes(hdCameras.size)) }
 
+  // Background, low-priority thumbnail decode for the scrub bar (qcamera frames), in-memory cached.
+  // Owned by the player (per drive) like the remux LRU, so MMRs/bitmaps free on leaving the drive.
+  val thumbnails = remember(deviceId, driveKey) { ThumbnailCache(THUMB_CACHE_BYTES) }
+  DisposableEffect(thumbnails) { onDispose { thumbnails.release() } }
+
   // HD cameras merged into the playlist (grow-only): adding a camera rebuilds the playlist to
   // include its lazy sources; toggling one back off is a same-frame visibility change (no rebuild),
   // so its source stays merged. Which tiles actually show is driven by `enabled`/`visible`. All
@@ -187,6 +190,10 @@ fun MultiCamPlayer(
   var positionMs by remember(deviceId, driveKey) { mutableStateOf(0L) }
   var totalMs by remember(deviceId, driveKey) { mutableStateOf(0L) }
   var playing by remember(deviceId, driveKey) { mutableStateOf(false) }
+  // True while a finger is dragging the scrub bar: the clock loop stops moving `positionMs` (the
+  // bar
+  // follows the finger) and the controls don't auto-hide mid-scrub.
+  var isScrubbing by remember(deviceId, driveKey) { mutableStateOf(false) }
   var audioOn by remember(deviceId, driveKey) { mutableStateOf(false) }
   var hasAudio by remember(player) { mutableStateOf(false) }
   // Per-renderer readiness (first frame rendered) — drives each tile's "Preparing HD…" spinner.
@@ -281,6 +288,20 @@ fun MultiCamPlayer(
     }
   }
 
+  // Scrub-bar thumbnail adapters: map a drive-global ms to the qcamera segment frame at that
+  // offset.
+  fun thumbnailAt(globalMs: Long): android.graphics.Bitmap? {
+    val (idx, off) = locate(windowsOf(player), globalMs)
+    return qcamera.getOrNull(idx)?.path?.let { thumbnails.get(it, off) }
+  }
+  fun prefetchThumbs(times: List<Long>) {
+    val windows = windowsOf(player)
+    for (t in times) {
+      val (idx, off) = locate(windows, t)
+      qcamera.getOrNull(idx)?.path?.let { thumbnails.prefetch(it, off) }
+    }
+  }
+
   // React to the enabled set. There is no eager remux anymore: building the playlist just wires up
   // lazy HD sources, so the player only remuxes the current window (+ look-ahead) and seeking
   // starts
@@ -350,7 +371,10 @@ fun MultiCamPlayer(
     while (true) {
       val windows = windowsOf(player)
       totalMs = windows.sum()
-      positionMs = globalPosition(windows, player.currentMediaItemIndex, player.currentPosition)
+      // While scrubbing, the bar follows the finger — don't let the clock fight it back.
+      if (!isScrubbing) {
+        positionMs = globalPosition(windows, player.currentMediaItemIndex, player.currentPosition)
+      }
       currentSegmentNum = qcamera.getOrNull(player.currentMediaItemIndex)?.segmentNum
       hasAudio = selector.sawAudio
       for (i in 0 until VIDEO_RENDERER_COUNT) {
@@ -362,8 +386,9 @@ fun MultiCamPlayer(
   }
 
   // Auto-hide the controls a few seconds after they appear while playing; any tap re-reveals them.
-  LaunchedEffect(controlsVisible, playing) {
-    if (controlsVisible && playing) {
+  // Never hide mid-scrub (and re-arm once a scrub ends, since isScrubbing is a key).
+  LaunchedEffect(controlsVisible, playing, isScrubbing) {
+    if (controlsVisible && playing && !isScrubbing) {
       delay(CONTROLS_HIDE_MS)
       controlsVisible = false
     }
@@ -423,6 +448,51 @@ fun MultiCamPlayer(
       )
     }
 
+    // Big, legible center play/pause button — replaces the old near-invisible bar button. Part of
+    // the tap-reveal controls; drawn above the tile gesture layer so it receives its own tap.
+    AnimatedVisibility(
+        visible = controlsVisible,
+        enter = fadeIn(),
+        exit = fadeOut(),
+        modifier = Modifier.align(Alignment.Center),
+    ) {
+      Box(
+          Modifier.size(64.dp)
+              .clip(CircleShape)
+              .background(Color.Black.copy(alpha = 0.35f))
+              .clickable {
+                playing = !playing
+                player.playWhenReady = playing
+              }
+              .testTag("drive_play_toggle"),
+          contentAlignment = Alignment.Center,
+      ) {
+        if (playing) {
+          Canvas(Modifier.size(26.dp)) {
+            val barW = size.width * 0.26f
+            val h = size.height * 0.86f
+            val top = (size.height - h) / 2f
+            val gap = size.width * 0.18f
+            drawRect(
+                Color.White,
+                topLeft = Offset(size.width / 2f - gap / 2f - barW, top),
+                size = Size(barW, h))
+            drawRect(
+                Color.White,
+                topLeft = Offset(size.width / 2f + gap / 2f, top),
+                size = Size(barW, h))
+          }
+        } else {
+          Icon(
+              Icons.Filled.PlayArrow,
+              contentDescription = "play",
+              tint = Color.White,
+              modifier = Modifier.size(40.dp),
+          )
+        }
+      }
+    }
+
     // Tap-to-reveal control overlay, pinned to the bottom over a legibility scrim.
     AnimatedVisibility(
         visible = controlsVisible,
@@ -465,40 +535,27 @@ fun MultiCamPlayer(
           }
         }
 
-        // Transport: play/pause, clock label, audio toggle.
+        // Merged seek bar + thumbnail scrubber (replaces the old Slider + Filmstrip): the thumb
+        // tracks the finger with a preview frame above it, and a pull-up reveals a filmstrip strip
+        // of nearby frames with a finer seek. Play/pause is the center button now.
+        ScrubBar(
+            positionMs = positionMs,
+            totalMs = totalMs,
+            thumbAt = { thumbnailAt(it) },
+            requestThumbs = { prefetchThumbs(it) },
+            onScrubChange = { isScrubbing = it },
+            onSeek = { seekGlobal(it) },
+            modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+        )
+
+        // Compact transport row: white clock label + audio toggle.
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
         ) {
-          IconButton(
-              onClick = {
-                playing = !playing
-                player.playWhenReady = playing
-              },
-              modifier = Modifier.testTag("drive_play_toggle"),
-          ) {
-            if (playing) {
-              val barColor = LocalContentColor.current
-              Canvas(Modifier.size(20.dp)) {
-                val barW = size.width * 0.24f
-                val h = size.height * 0.78f
-                val top = (size.height - h) / 2f
-                val gap = size.width * 0.16f
-                drawRect(
-                    barColor,
-                    topLeft = Offset(size.width / 2f - gap / 2f - barW, top),
-                    size = Size(barW, h))
-                drawRect(
-                    barColor,
-                    topLeft = Offset(size.width / 2f + gap / 2f, top),
-                    size = Size(barW, h))
-              }
-            } else {
-              Icon(Icons.Filled.PlayArrow, contentDescription = "play")
-            }
-          }
           Text(
               "${fmtTime(positionMs)} / ${fmtTime(totalMs)}",
+              color = Color.White,
               style = MaterialTheme.typography.bodySmall)
           Spacer(Modifier.weight(1f))
           if (hasAudio) {
@@ -512,18 +569,6 @@ fun MultiCamPlayer(
                 modifier = Modifier.testTag("drive_audio_toggle"),
             )
           }
-        }
-
-        Slider(
-            value = if (totalMs > 0) positionMs.toFloat().coerceIn(0f, totalMs.toFloat()) else 0f,
-            valueRange = 0f..totalMs.coerceAtLeast(1L).toFloat(),
-            enabled = totalMs > 0,
-            onValueChange = { v -> seekGlobal(v.toLong()) },
-            modifier = Modifier.fillMaxWidth().testTag("drive_scrubber"),
-        )
-
-        if (totalMs > 0 && qcamera.isNotEmpty()) {
-          Filmstrip(qcamera.map { it.path }, windowsOf(player), totalMs) { t -> seekGlobal(t) }
         }
       }
     }
@@ -841,46 +886,6 @@ private fun TileGrid(
             slotLabel(slots[dragIndex]),
             color = Color.White,
             style = MaterialTheme.typography.titleMedium)
-      }
-    }
-  }
-}
-
-/**
- * Evenly-spaced keyframe thumbnails across the whole drive (from qcamera); tap to seek to that
- * route time.
- */
-@Composable
-private fun Filmstrip(
-    paths: List<String>,
-    windows: LongArray,
-    totalMs: Long,
-    onSeek: (Long) -> Unit,
-) {
-  val context = LocalContext.current
-  val ticks = remember(totalMs) { (0 until FILMSTRIP_TICKS).map { totalMs * it / FILMSTRIP_TICKS } }
-  LazyRow(
-      horizontalArrangement = Arrangement.spacedBy(4.dp),
-      modifier = Modifier.fillMaxWidth().padding(top = 6.dp).testTag("drive_filmstrip"),
-  ) {
-    items(ticks) { t ->
-      val (segIdx, offsetMs) = locate(windows, t)
-      if (segIdx in paths.indices) {
-        AsyncImage(
-            model =
-                ImageRequest.Builder(context)
-                    .data(File(paths[segIdx]))
-                    .videoFrameMillis(offsetMs)
-                    .crossfade(false)
-                    .build(),
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier =
-                Modifier.size(width = 80.dp, height = 45.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .clickable { onSeek(t) },
-        )
       }
     }
   }
