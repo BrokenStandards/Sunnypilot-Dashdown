@@ -196,4 +196,24 @@ class RouteClockTest {
         TileState.Preparing,
         tileStateFor(VideoSlot.Hd(CameraId.ROAD), null, roadSegs01, ready = false))
   }
+
+  // --- lruMaxBytes: remux-cache budget (bounds + monotonicity hold for any test-JVM heap) ---
+
+  @Test
+  fun lruBudgetWithinBounds() {
+    val minBytes = 80 * 1024 * 1024
+    val maxBytes = 256 * 1024 * 1024
+    for (n in 0..3) assertTrue(lruMaxBytes(n) in minBytes..maxBytes)
+  }
+
+  @Test
+  fun lruBudgetNonDecreasingInCamCount() {
+    assertTrue(lruMaxBytes(2) >= lruMaxBytes(1))
+    assertTrue(lruMaxBytes(3) >= lruMaxBytes(2))
+  }
+
+  @Test
+  fun lruBudgetTreatsZeroCamerasAsOne() {
+    assertEquals(lruMaxBytes(1), lruMaxBytes(0))
+  }
 }

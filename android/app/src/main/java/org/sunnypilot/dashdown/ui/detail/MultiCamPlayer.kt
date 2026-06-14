@@ -156,9 +156,13 @@ fun MultiCamPlayer(
             HdRemuxer { d, key, seg, kindOrd ->
               remuxBytes(d, key, seg.toUInt(), FileKind.entries[kindOrd])
             },
-            HevcRemuxDataSource.lruMaxBytes(),
+            lruMaxBytes(hdCameras.size),
         )
       }
+  // Grow the remux-cache budget as the available HD-camera set settles (a drive opened mid-download
+  // goes 0→1→2→3 cams) — sized to cache ~2 full N-camera windows. resize() keeps cached bytes, so
+  // this never drops the cache (which would re-introduce the churn the player itself avoids).
+  LaunchedEffect(hdCameras.size) { hdSourceFactory.resize(lruMaxBytes(hdCameras.size)) }
 
   // HD cameras merged into the playlist (grow-only): adding a camera rebuilds the playlist to
   // include its lazy sources; toggling one back off is a same-frame visibility change (no rebuild),
