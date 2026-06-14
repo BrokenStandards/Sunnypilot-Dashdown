@@ -140,6 +140,13 @@ class HevcRemuxDataSource(
     private val locks = ConcurrentHashMap<String, Any>()
 
     override fun createDataSource(): DataSource = HevcRemuxDataSource(cache, locks, remuxer)
+
+    /**
+     * Resize the shared budget as the available HD-camera count settles (e.g. a drive opened while
+     * still downloading goes 1→2→3 cams). [LruCache.resize] keeps the cached entries — no drop — so
+     * this never forces a re-remux, unlike recreating the Factory would.
+     */
+    fun resize(maxBytes: Int) = cache.resize(maxBytes)
   }
 
   companion object {
@@ -148,13 +155,26 @@ class HevcRemuxDataSource(
     /** seg/kind tail of an [HdMediaUri] for compact logs. */
     private fun shortKey(key: String): String =
         HdMediaUri.parse(key)?.let { "seg${it.segNum}/k${it.kindOrdinal}" } ?: key
-
-    /**
-     * LRU budget for remuxed HD MP4 bytes: a slice of the heap, enough for ~3 cams × a few windows.
-     */
-    fun lruMaxBytes(): Int {
-      val eighth = Runtime.getRuntime().maxMemory() / 8
-      return eighth.coerceIn(64L * 1024 * 1024, 192L * 1024 * 1024).toInt()
-    }
   }
+}
+
+// A remuxed HD segment is ≈ its raw .hevc (~37 MB); budget per camera for two windows (the one
+// playing + the look-ahead being remuxed) so a boundary crossing or seek-back is a cache hit, not a
+// re-remux.
+private const val APPROX_SEGMENT_MB = 40
+private const val MIN_LRU_MB = 80 // two single-camera windows
+private const val MAX_LRU_MB = 256 // hard ceiling, to bound GC pause time
+
+/**
+ * LRU budget (bytes) for remuxed HD MP4s, sized to hold ~2 full N-camera windows, but capped at ~40
+ * % of the heap (the rest is for ExoPlayer buffers, Coil, and the UI) and a hard ceiling.
+ * [camCount] is the AVAILABLE HD cameras for the drive (≤3); pair with
+ * [HevcRemuxDataSource.Factory.resize] as it settles. Reads the actual heap limit, which reflects
+ * `android:largeHeap`. Pure, so it is unit-tested.
+ */
+internal fun lruMaxBytes(camCount: Int): Int {
+  val heapMb = (Runtime.getRuntime().maxMemory() / (1024L * 1024L)).toInt()
+  val capMb = (heapMb * 2 / 5).coerceAtLeast(MIN_LRU_MB) // ≤ ~40 % of the heap
+  val wantMb = camCount.coerceAtLeast(1) * APPROX_SEGMENT_MB * 2 // current + look-ahead, N cams
+  return wantMb.coerceIn(MIN_LRU_MB, capMb).coerceAtMost(MAX_LRU_MB) * 1024 * 1024
 }
