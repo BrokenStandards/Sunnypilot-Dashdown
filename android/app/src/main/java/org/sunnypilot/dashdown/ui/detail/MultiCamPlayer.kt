@@ -196,6 +196,12 @@ fun MultiCamPlayer(
   // visible, so toggling a camera on/off doesn't lose a manual arrangement.
   var slotOrder by remember(deviceId, driveKey) { mutableStateOf(emptyList<VideoSlot>()) }
 
+  // The drive-segment the playhead is in (windows are 1:1 with qcamera), published by the clock —
+  // lets each tile tell "HD not downloaded for this segment" (a quiet preview) from "remuxing now".
+  var currentSegmentNum by remember(deviceId, driveKey) { mutableStateOf<UInt?>(null) }
+  // Downloaded segments per HD camera, for the per-tile NotDownloaded classification.
+  val hdSegs = remember(hdCameras) { hdCameras.associate { it.id to it.segmentNums.toSet() } }
+
   val visible: List<VideoSlot> = orderedVisibleSlots(visibleSlots(enabled), slotOrder)
 
   // Build the playlist: one source per segment (the merged cameras present for it + qcamera), with
@@ -323,6 +329,7 @@ fun MultiCamPlayer(
       val windows = windowsOf(player)
       totalMs = windows.sum()
       positionMs = globalPosition(windows, player.currentMediaItemIndex, player.currentPosition)
+      currentSegmentNum = qcamera.getOrNull(player.currentMediaItemIndex)?.segmentNum
       hasAudio = selector.sawAudio
       for (i in 0 until VIDEO_RENDERER_COUNT) {
         ready[i] = factory.stats[i].firstFrameRendered
@@ -363,13 +370,33 @@ fun MultiCamPlayer(
         onReorder = { from, to -> slotOrder = swapSlots(visible, from, to) },
         modifier = Modifier.fillMaxSize().testTag("drive_detail_player"),
     ) { slot, tileModifier ->
+      val slotState =
+          tileStateFor(slot, currentSegmentNum, hdSegs, ready[slot.rendererIndex] == true)
+      // For a segment a camera hasn't downloaded, show that segment's qcamera frame as a quiet
+      // preview poster (one decode per segment) behind the badge — never an indefinite spinner.
+      val previewModel =
+          if (slotState == TileState.NotDownloaded) {
+            qcamera
+                .firstOrNull { it.segmentNum == currentSegmentNum }
+                ?.path
+                ?.let { p ->
+                  remember(p) {
+                    ImageRequest.Builder(context)
+                        .data(File(p))
+                        .videoFrameMillis(0L)
+                        .crossfade(false)
+                        .build()
+                  }
+                }
+          } else {
+            null
+          }
       CameraTile(
           player = player,
           renderer = factory.videoRenderers[slot.rendererIndex],
           label = slotLabel(slot),
-          // The qcamera preview is ready as soon as it renders; HD tiles wait for their first
-          // frame.
-          ready = ready[slot.rendererIndex] == true,
+          state = slotState,
+          previewModel = previewModel,
           modifier = tileModifier,
       )
     }
@@ -518,16 +545,54 @@ private fun windowsOf(player: ExoPlayer): LongArray {
 }
 
 /**
- * A single camera surface (its own renderer) filling its box, with a label and a "preparing"
- * spinner until ready. The box is already sized to the video aspect by [TileGrid]/[planTiles], so
- * the surface fills it exactly — no crop, no stretch, and no letterbox gap between adjacent tiles.
+ * A tile's display state: the camera is rendering, still remuxing, or has no HD for this segment.
+ */
+enum class TileState {
+  Ready,
+  Preparing,
+  NotDownloaded,
+}
+
+/**
+ * Classify a tile for the current segment. A camera with no source this segment — past the download
+ * frontier, or a segment the route never recorded it — is [TileState.NotDownloaded] (a quiet
+ * preview, not a dead spinner); otherwise it is [TileState.Preparing] until its first frame
+ * renders, then [TileState.Ready]. qcamera is present in every window, and an unknown segment
+ * (before the first clock tick) is treated as present so a freshly-opened HD tile shows the
+ * spinner, not the "not downloaded" poster. Pure, so it is unit-tested.
+ */
+internal fun tileStateFor(
+    slot: VideoSlot,
+    currentSegmentNum: UInt?,
+    hdSegs: Map<CameraId, Set<UInt>>,
+    ready: Boolean,
+): TileState {
+  val present =
+      when (slot) {
+        is VideoSlot.Hd ->
+            currentSegmentNum == null || currentSegmentNum in (hdSegs[slot.id] ?: emptySet())
+        VideoSlot.QcamVideo -> true
+      }
+  return when {
+    !present -> TileState.NotDownloaded
+    ready -> TileState.Ready
+    else -> TileState.Preparing
+  }
+}
+
+/**
+ * A single camera surface (its own renderer) filling its box, with a label and — until ready — a
+ * spinner, or a qcamera preview poster when this segment's HD isn't downloaded. The box is already
+ * sized to the video aspect by [TileGrid]/[planTiles], so the surface fills it exactly — no crop,
+ * no stretch, and no letterbox gap between adjacent tiles.
  */
 @Composable
 private fun CameraTile(
     player: ExoPlayer,
     renderer: Renderer,
     label: String,
-    ready: Boolean,
+    state: TileState,
+    previewModel: ImageRequest? = null,
     modifier: Modifier = Modifier,
 ) {
   Box(modifier.background(Color.Black).testTag("drive_tile_${label.lowercase()}")) {
@@ -561,13 +626,39 @@ private fun CameraTile(
         },
         modifier = Modifier.fillMaxSize(),
     )
-    if (!ready) {
-      CircularProgressIndicator(Modifier.align(Alignment.Center).size(28.dp))
-      Text(
-          "Preparing HD…",
-          style = MaterialTheme.typography.labelSmall,
-          modifier = Modifier.align(Alignment.BottomCenter).padding(4.dp),
-      )
+    when (state) {
+      TileState.Ready -> {}
+      TileState.Preparing -> {
+        // Present for this segment, first frame not yet rendered (the ~1.6 s in-memory remux).
+        CircularProgressIndicator(Modifier.align(Alignment.Center).size(28.dp))
+        Text(
+            "Preparing HD…",
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(4.dp),
+        )
+      }
+      TileState.NotDownloaded -> {
+        // HD for this segment isn't on disk (past the download frontier, or a segment this route
+        // never recorded the camera) — show the qcamera preview frame + a quiet badge, not a
+        // dead spinner.
+        if (previewModel != null) {
+          AsyncImage(
+              model = previewModel,
+              contentDescription = null,
+              contentScale = ContentScale.Crop,
+              modifier = Modifier.fillMaxSize(),
+          )
+        }
+        Text(
+            "HD not downloaded",
+            style = MaterialTheme.typography.labelSmall,
+            modifier =
+                Modifier.align(Alignment.BottomCenter)
+                    .padding(4.dp)
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f))
+                    .padding(horizontal = 4.dp),
+        )
+      }
     }
     Text(
         label,

@@ -155,4 +155,45 @@ class RouteClockTest {
     val before = playlistSignature(listOf(QSegment(0u, "/q0")), listOf(CameraId.ROAD), hd)
     assertNotEquals(before, playlistSignature(q01, listOf(CameraId.ROAD), hd))
   }
+
+  // --- tileStateFor: per-tile classification (spinner vs preview-poster vs nothing) ---
+
+  private val roadSegs01 = mapOf(CameraId.ROAD to setOf(0u, 1u))
+
+  @Test
+  fun tileStateNotDownloadedWhenSegmentMissingForCamera() {
+    // Playhead in seg 5, but road only has segs 0-1 (frontier or gap) → preview, not a spinner.
+    assertEquals(
+        TileState.NotDownloaded,
+        tileStateFor(VideoSlot.Hd(CameraId.ROAD), 5u, roadSegs01, ready = false))
+  }
+
+  @Test
+  fun tileStatePreparingWhenPresentButNotRendered() {
+    assertEquals(
+        TileState.Preparing,
+        tileStateFor(VideoSlot.Hd(CameraId.ROAD), 1u, roadSegs01, ready = false))
+  }
+
+  @Test
+  fun tileStateReadyWhenPresentAndRendered() {
+    assertEquals(
+        TileState.Ready, tileStateFor(VideoSlot.Hd(CameraId.ROAD), 1u, roadSegs01, ready = true))
+  }
+
+  @Test
+  fun tileStateQcameraNeverNotDownloaded() {
+    // qcamera is present in every window → only Preparing/Ready, never NotDownloaded.
+    assertEquals(
+        TileState.Preparing, tileStateFor(VideoSlot.QcamVideo, 9u, emptyMap(), ready = false))
+    assertEquals(TileState.Ready, tileStateFor(VideoSlot.QcamVideo, 9u, emptyMap(), ready = true))
+  }
+
+  @Test
+  fun tileStatePreparingWhileSegmentUnknown() {
+    // Before the clock first ticks (segment unknown) an HD tile shows the spinner, not the poster.
+    assertEquals(
+        TileState.Preparing,
+        tileStateFor(VideoSlot.Hd(CameraId.ROAD), null, roadSegs01, ready = false))
+  }
 }
