@@ -102,6 +102,10 @@ private const val DEFAULT_TILE_ASPECT = 1928f / 1208f
 // spans ALL segments from the start (replaced by the exact duration as each window prepares).
 private const val DEFAULT_SEGMENT_MS = 60_000L
 
+// Seeking to within this much of a window's end prewarms the next segment's remux into the LRU, so
+// crossing the boundary right after the seek is a cache hit (seamless) rather than a stall.
+private const val PREWARM_TAIL_MS = 8_000L
+
 /**
  * The **multi-camera, drive-wide** player. ONE [ExoPlayer] drives N video renderers (one per camera
  * tile) plus the audio renderer from a single clock: the playlist is one [MergingMediaSource] per
@@ -258,9 +262,23 @@ fun MultiCamPlayer(
   }
 
   fun seekGlobal(globalMs: Long) {
-    val (idx, off) = locate(windowsOf(player), globalMs)
+    val windows = windowsOf(player)
+    val (idx, off) = locate(windows, globalMs)
     player.seekTo(idx.coerceIn(0, (player.mediaItemCount - 1).coerceAtLeast(0)), off)
     positionMs = globalMs
+    // A seek near a window's end leaves ExoPlayer little time to remux the next segment before the
+    // boundary — prewarm it (only the merged cams that have it on disk) into the LRU so the
+    // crossing
+    // is a cache hit (seamless) instead of a ~one-remux stall.
+    val next = idx + 1
+    if (next in qcamera.indices && (windows.getOrNull(idx) ?: 0L) - off < PREWARM_TAIL_MS) {
+      val nextSeg = qcamera[next].segmentNum
+      val keys =
+          mergedCams
+              .filter { nextSeg in (hdSegs[it] ?: emptySet()) }
+              .map { HdMediaUri.build(deviceId, driveKey, nextSeg, it.kind.ordinal) }
+      if (keys.isNotEmpty()) hdSourceFactory.prewarm(keys)
+    }
   }
 
   // React to the enabled set. There is no eager remux anymore: building the playlist just wires up

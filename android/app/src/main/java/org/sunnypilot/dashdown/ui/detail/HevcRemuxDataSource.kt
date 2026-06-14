@@ -12,6 +12,7 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 
 /**
  * Remux one HD-camera segment's raw HEVC to MP4 bytes (or null if it can't be produced — not
@@ -63,43 +64,8 @@ class HevcRemuxDataSource(
     return bytesRemaining.toLong()
   }
 
-  /**
-   * Cached bytes for [key], remuxing on miss under a per-key lock so concurrent merge children for
-   * the same (segment, camera) don't remux twice — while different cameras still remux in parallel.
-   * The (slow) remux runs outside the cache's internal lock. Returns null if no bytes are
-   * available.
-   */
-  private fun getOrRemux(key: String): ByteArray? {
-    cache.get(key)?.let {
-      Log.d(TAG, "hit  ${shortKey(key)} (${it.size / 1024}KB, lru=${cache.size() / 1024}KB)")
-      return it
-    }
-    val lock = locks.getOrPut(key) { Any() }
-    synchronized(lock) {
-      cache.get(key)?.let {
-        return it
-      }
-      val ref = HdMediaUri.parse(key) ?: return null
-      val t0 = System.nanoTime()
-      val bytes =
-          try {
-            remuxer.remux(ref.deviceId, ref.driveKey, ref.segNum, ref.kindOrdinal)
-          } catch (t: Throwable) {
-            Log.w(TAG, "remux threw for ${shortKey(key)}", t)
-            null
-          }
-      if (bytes == null) {
-        Log.w(TAG, "miss ${shortKey(key)} -> null")
-        return null
-      }
-      val ms = (System.nanoTime() - t0) / 1_000_000
-      cache.put(key, bytes)
-      Log.d(
-          TAG,
-          "remux ${shortKey(key)} -> ${bytes.size / 1024}KB in ${ms}ms (lru=${cache.size() / 1024}KB/${cache.maxSize() / 1024}KB)")
-      return bytes
-    }
-  }
+  /** Cached bytes for [key], remuxing on miss; see [fillOrGet] (shared with [Factory.prewarm]). */
+  private fun getOrRemux(key: String): ByteArray? = fillOrGet(cache, locks, remuxer, key)
 
   override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
     if (length == 0) return 0
@@ -138,6 +104,15 @@ class HevcRemuxDataSource(
           override fun sizeOf(key: String, value: ByteArray): Int = value.size
         }
     private val locks = ConcurrentHashMap<String, Any>()
+    // Low-priority background thread for prewarming the next segment on a seek (see [prewarm]); one
+    // thread keeps it from contending with ExoPlayer's loader threads remuxing the landed segment.
+    private val prewarmExecutor =
+        Executors.newSingleThreadExecutor { r ->
+          Thread(r, "hevc-prewarm").apply {
+            isDaemon = true
+            priority = Thread.MIN_PRIORITY
+          }
+        }
 
     override fun createDataSource(): DataSource = HevcRemuxDataSource(cache, locks, remuxer)
 
@@ -147,14 +122,66 @@ class HevcRemuxDataSource(
      * this never forces a re-remux, unlike recreating the Factory would.
      */
     fun resize(maxBytes: Int) = cache.resize(maxBytes)
+
+    /**
+     * Fire-and-forget: remux [keys] into the shared LRU on a background thread so a later ExoPlayer
+     * `open()` is a cache hit. Used to warm the NEXT segment when a seek lands near a window's end,
+     * so crossing the boundary is seamless. Shares [fillOrGet]'s per-key lock + cache with
+     * `open()`, so a prewarm and a loader open of the same key never double-remux.
+     */
+    fun prewarm(keys: List<String>) {
+      for (key in keys) prewarmExecutor.execute { fillOrGet(cache, locks, remuxer, key) }
+    }
   }
+}
 
-  companion object {
-    private const val TAG = "HevcRemux"
+private const val TAG = "HevcRemux"
 
-    /** seg/kind tail of an [HdMediaUri] for compact logs. */
-    private fun shortKey(key: String): String =
-        HdMediaUri.parse(key)?.let { "seg${it.segNum}/k${it.kindOrdinal}" } ?: key
+/** seg/kind tail of an [HdMediaUri] for compact logs. */
+private fun shortKey(key: String): String =
+    HdMediaUri.parse(key)?.let { "seg${it.segNum}/k${it.kindOrdinal}" } ?: key
+
+/**
+ * Cached bytes for [key], remuxing on miss under a per-key lock so concurrent callers for the same
+ * (segment, camera) don't remux twice — while different cameras still remux in parallel. The (slow)
+ * remux runs outside the cache's internal lock. Returns null if no bytes are available. Top-level
+ * so both [HevcRemuxDataSource.getOrRemux] (the loader thread) and
+ * [HevcRemuxDataSource.Factory.prewarm] (a background thread) share the exact same cache + locks.
+ */
+private fun fillOrGet(
+    cache: LruCache<String, ByteArray>,
+    locks: ConcurrentHashMap<String, Any>,
+    remuxer: HdRemuxer,
+    key: String,
+): ByteArray? {
+  cache.get(key)?.let {
+    Log.d(TAG, "hit  ${shortKey(key)} (${it.size / 1024}KB, lru=${cache.size() / 1024}KB)")
+    return it
+  }
+  val lock = locks.getOrPut(key) { Any() }
+  synchronized(lock) {
+    cache.get(key)?.let {
+      return it
+    }
+    val ref = HdMediaUri.parse(key) ?: return null
+    val t0 = System.nanoTime()
+    val bytes =
+        try {
+          remuxer.remux(ref.deviceId, ref.driveKey, ref.segNum, ref.kindOrdinal)
+        } catch (t: Throwable) {
+          Log.w(TAG, "remux threw for ${shortKey(key)}", t)
+          null
+        }
+    if (bytes == null) {
+      Log.w(TAG, "miss ${shortKey(key)} -> null")
+      return null
+    }
+    val ms = (System.nanoTime() - t0) / 1_000_000
+    cache.put(key, bytes)
+    Log.d(
+        TAG,
+        "remux ${shortKey(key)} -> ${bytes.size / 1024}KB in ${ms}ms (lru=${cache.size() / 1024}KB/${cache.maxSize() / 1024}KB)")
+    return bytes
   }
 }
 
