@@ -109,6 +109,17 @@ class DashdownRepository(private val locator: ServiceLocator) {
       kind: FileKind,
   ): String? = io { locator.core.ensurePlayable(deviceId, driveKey, segmentNum, kind) }
 
+  /**
+   * Remux one HD camera segment to MP4 **bytes in memory** (no file written); null for a non-HD
+   * [kind] or an un-mirrored segment. **Synchronous on purpose** — unlike every other call here it
+   * does NOT hop to [Dispatchers.IO]: the only caller is [ui.detail.HevcRemuxDataSource], already
+   * on ExoPlayer's background loader thread, which must block on the remux. The underlying core
+   * call is a synchronous FFI. [uniffi.dashdown_core.CoreException] propagates (the data source
+   * catches it).
+   */
+  fun remuxHdBytes(deviceId: Long, driveKey: String, segmentNum: UInt, kind: FileKind): ByteArray? =
+      locator.core.remuxHdBytes(deviceId, driveKey, segmentNum, kind)
+
   // --- Downloads / maintenance / connectivity ---
   suspend fun startDriveDownload(deviceId: Long, driveKey: String): SyncHandle = io {
     locator.core.startDriveDownload(deviceId, driveKey)

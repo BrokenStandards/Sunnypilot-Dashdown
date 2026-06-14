@@ -120,6 +120,36 @@ impl AppCore {
     pub fn set_log_sink(&self, sink: Option<Arc<dyn LogSink>>, level: LogLevel) {
         crate::logging::set_sink(sink, level);
     }
+
+    /// Remux one HD camera segment's raw HEVC to MP4 **in memory**, returning the
+    /// bytes — no file is written (cf. the disk-caching `ensure_playable`). The
+    /// player feeds these bytes to ExoPlayer through a custom in-memory data source
+    /// and remuxes lazily, segment-by-segment, as playback/seeks reach each window.
+    /// `Ok(None)` for a non-HD `kind` or a segment that isn't completely mirrored.
+    ///
+    /// **Synchronous by design**: the Android player calls this from ExoPlayer's
+    /// background loader thread, which must block on the (CPU/IO-bound) remux. Never
+    /// call it from an async executor thread.
+    pub fn remux_hd_bytes(
+        &self,
+        device_id: i64,
+        drive_key: String,
+        segment_num: u32,
+        kind: FileKind,
+    ) -> Result<Option<Vec<u8>>> {
+        // Only the raw HEVC cameras need remuxing; qcamera/others are never routed here.
+        if !matches!(
+            kind,
+            FileKind::FCamera | FileKind::ECamera | FileKind::DCamera
+        ) {
+            return Ok(None);
+        }
+        let Some(src) = self.resolve_local_path_sync(device_id, &drive_key, segment_num, kind)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(crate::video::remux_hevc_to_mp4_bytes(&src)?))
+    }
 }
 
 // ---- async data surface -----------------------------------------------------
@@ -410,6 +440,39 @@ impl AppCore {
     /// drive, then for each segment (optionally only `only_segment`) emit the
     /// absolute path of its `kind` file when that file is fully mirrored. Runs the
     /// DB read + filesystem stats on the blocking pool.
+    /// Synchronous single-segment counterpart of [`resolve_local_paths`]: the
+    /// absolute path of the `kind` file in `segment_num` of the drive, when that
+    /// file is fully mirrored (else `None`). Used by the synchronous
+    /// `remux_hd_bytes` (called on the player's loader thread, so no blocking pool).
+    fn resolve_local_path_sync(
+        &self,
+        device_id: i64,
+        drive_key: &str,
+        segment_num: u32,
+        kind: FileKind,
+    ) -> Result<Option<PathBuf>> {
+        let drive = self
+            .repo
+            .get_drive(device_id, drive_key)?
+            .ok_or_else(|| CoreError::NotFound(format!("drive {drive_key}")))?;
+        let mirror = MirrorStore::new(self.engine.mirror_root().join(device_id.to_string()));
+        let Some(seg) = drive
+            .segments
+            .iter()
+            .find(|s| s.name.segment_num == segment_num)
+        else {
+            return Ok(None);
+        };
+        let Some(file) = seg.files.iter().find(|f| f.kind == kind) else {
+            return Ok(None);
+        };
+        let rel = file_rel(REALDATA_REL, &seg.name, &file.name);
+        if !mirror.is_complete(&rel) {
+            return Ok(None);
+        }
+        Ok(Some(mirror.final_path(&rel)?))
+    }
+
     async fn resolve_local_paths(
         &self,
         device_id: i64,
