@@ -128,16 +128,20 @@ fun MultiCamPlayer(
 ) {
   val context = LocalContext.current
 
-  // One player, built once: N video renderers (MultiRenderersFactory) + a custom selector that
-  // routes one merged video group to each renderer (per window). Released on dispose.
+  // One player PER DRIVE, keyed on (deviceId, driveKey) — NOT on the camera/segment lists. As a
+  // download lands more HD segments, `hdCameras`/`qcamera` change; the player must NOT be torn down
+  // and rebuilt for that (it resets position to 0:00 and re-spins every tile). We update its
+  // playlist in place instead (the delta effect below). N video renderers (MultiRenderersFactory) +
+  // a custom selector that routes one merged video group to each renderer (per window). Released on
+  // dispose.
   val factory =
-      remember(qcamera, hdCameras) { MultiRenderersFactory(context, VIDEO_RENDERER_COUNT) }
+      remember(deviceId, driveKey) { MultiRenderersFactory(context, VIDEO_RENDERER_COUNT) }
   val selector =
-      remember(qcamera, hdCameras) {
+      remember(deviceId, driveKey) {
         TileMultiCamSelector(emptyList(), BooleanArray(VIDEO_RENDERER_COUNT), false)
       }
   val player =
-      remember(qcamera, hdCameras) {
+      remember(deviceId, driveKey) {
         ExoPlayer.Builder(context).setRenderersFactory(factory).setTrackSelector(selector).build()
       }
   DisposableEffect(player) { onDispose { player.release() } }
@@ -158,30 +162,39 @@ fun MultiCamPlayer(
 
   // HD cameras merged into the playlist (grow-only): adding a camera rebuilds the playlist to
   // include its lazy sources; toggling one back off is a same-frame visibility change (no rebuild),
-  // so its source stays merged. Which tiles actually show is driven by `enabled`/`visible`.
-  var mergedCams by remember(qcamera, hdCameras) { mutableStateOf(emptyList<CameraId>()) }
-  var initialized by remember(qcamera, hdCameras) { mutableStateOf(false) }
+  // so its source stays merged. Which tiles actually show is driven by `enabled`/`visible`. All
+  // player state is keyed on (deviceId, driveKey) so it survives `hdCameras`/`qcamera` growth
+  // during
+  // a download — only navigating to a different drive resets it.
+  var mergedCams by remember(deviceId, driveKey) { mutableStateOf(emptyList<CameraId>()) }
+  var initialized by remember(deviceId, driveKey) { mutableStateOf(false) }
+  // Signature of the playlist last applied to the player; the delta effect rebuilds only when it
+  // changes (a merged camera gained a segment, or qcamera grew), so a download flap can't churn it.
+  var lastWindowsKey by remember(deviceId, driveKey) { mutableStateOf<List<Any>?>(null) }
 
-  var enabled by remember(hdCameras) { mutableStateOf(defaultEnabled(hdCameras)) }
-  var positionMs by remember(qcamera, hdCameras) { mutableStateOf(0L) }
-  var totalMs by remember(qcamera, hdCameras) { mutableStateOf(0L) }
-  var playing by remember(qcamera, hdCameras) { mutableStateOf(false) }
-  var audioOn by remember(qcamera, hdCameras) { mutableStateOf(false) }
+  var enabled by remember(deviceId, driveKey) { mutableStateOf(defaultEnabled(hdCameras)) }
+  // True once the user has touched a camera toggle, so the auto-enable effect never overrides their
+  // choice when a camera's first segment arrives mid-download.
+  var userTouchedEnabled by remember(deviceId, driveKey) { mutableStateOf(false) }
+  var positionMs by remember(deviceId, driveKey) { mutableStateOf(0L) }
+  var totalMs by remember(deviceId, driveKey) { mutableStateOf(0L) }
+  var playing by remember(deviceId, driveKey) { mutableStateOf(false) }
+  var audioOn by remember(deviceId, driveKey) { mutableStateOf(false) }
   var hasAudio by remember(player) { mutableStateOf(false) }
   // Per-renderer readiness (first frame rendered) — drives each tile's "Preparing HD…" spinner.
-  val ready = remember(qcamera, hdCameras) { mutableStateMapOf<Int, Boolean>() }
+  val ready = remember(deviceId, driveKey) { mutableStateMapOf<Int, Boolean>() }
   // Per-renderer decoded display aspect (w/h), reported on first frame — sizes the tiles exactly.
-  val tileAspect = remember(qcamera, hdCameras) { mutableStateMapOf<Int, Float>() }
+  val tileAspect = remember(deviceId, driveKey) { mutableStateMapOf<Int, Float>() }
   // Tiling strategy: auto-default is the area-maximizing grid; the user can cycle to FEATURE.
-  var strategy by remember(qcamera, hdCameras) { mutableStateOf(DEFAULT_TILE_STRATEGY) }
+  var strategy by remember(deviceId, driveKey) { mutableStateOf(DEFAULT_TILE_STRATEGY) }
   // Immersive controls: tap the video to reveal; auto-hides while playing. Reported up so the
   // screen
   // can show/hide its top chrome in lock-step.
-  var controlsVisible by remember(qcamera, hdCameras) { mutableStateOf(true) }
+  var controlsVisible by remember(deviceId, driveKey) { mutableStateOf(true) }
   LaunchedEffect(controlsVisible) { onControlsVisibleChange(controlsVisible) }
   // The user's drag-and-drop tile order (session-only); reconciled against the cameras currently
   // visible, so toggling a camera on/off doesn't lose a manual arrangement.
-  var slotOrder by remember(qcamera, hdCameras) { mutableStateOf(emptyList<VideoSlot>()) }
+  var slotOrder by remember(deviceId, driveKey) { mutableStateOf(emptyList<VideoSlot>()) }
 
   val visible: List<VideoSlot> = orderedVisibleSlots(visibleSlots(enabled), slotOrder)
 
@@ -221,6 +234,11 @@ fun MultiCamPlayer(
     return windows to layouts
   }
 
+  // The signature of the playlist the player currently shows (see [playlistSignature]); the delta
+  // effect compares it to the last applied one so it skips a rebuild when an `hdCameras`/`qcamera`
+  // change wouldn't alter the windows — which is what keeps a download flap from churning.
+  fun windowsKey(): List<Any> = playlistSignature(qcamera, mergedCams, hdCameras)
+
   fun applyVisibility() {
     val v = BooleanArray(VIDEO_RENDERER_COUNT)
     visible.forEach { if (it.rendererIndex < v.size) v[it.rendererIndex] = true }
@@ -249,6 +267,7 @@ fun MultiCamPlayer(
       applyVisibility()
       player.setMediaSources(w)
       player.prepare()
+      lastWindowsKey = windowsKey()
       initialized = true
       return@LaunchedEffect
     }
@@ -263,9 +282,38 @@ fun MultiCamPlayer(
       selector.windowLayouts = l
       player.setMediaSources(w, savedIdx.coerceAtLeast(0), savedOff.coerceAtLeast(0))
       player.prepare()
+      lastWindowsKey = windowsKey()
     }
 
     applyVisibility()
+  }
+
+  // Auto-enable the default camera when its first segment lands mid-download, so a drive opened as
+  // qcamera-only doesn't stay preview-only once HD starts arriving — unless the user already chose
+  // a camera set (then we never override it).
+  LaunchedEffect(hdCameras) {
+    if (!userTouchedEnabled && enabled.isEmpty() && hdCameras.isNotEmpty()) {
+      enabled = defaultEnabled(hdCameras)
+    }
+  }
+
+  // Apply newly-downloaded segments WITHOUT recreating the player. As a download lands HD/qcamera
+  // segments, `hdCameras`/`qcamera` change; rebuild the playlist in place, preserving the current
+  // segment + offset — but only when the windows actually change (snapshot compare), so a failed→
+  // resume download flap (which re-runs the ViewModel's load() repeatedly) can't churn the player.
+  // Already-remuxed windows are LRU hits, so this re-prepares only the current window.
+  LaunchedEffect(qcamera, hdCameras) {
+    if (!initialized) return@LaunchedEffect
+    val key = windowsKey()
+    if (key == lastWindowsKey) return@LaunchedEffect
+    val savedIdx = player.currentMediaItemIndex
+    val savedOff = player.currentPosition
+    val (w, l) = buildWindows()
+    selector.windowLayouts = l
+    player.setMediaSources(w, savedIdx.coerceAtLeast(0), savedOff.coerceAtLeast(0))
+    player.prepare()
+    applyVisibility()
+    lastWindowsKey = key
   }
 
   // Clock: publish the drive-global position + total every tick (smooth scrubber), and mirror each
@@ -349,6 +397,7 @@ fun MultiCamPlayer(
               FilterChip(
                   selected = track.id in enabled,
                   onClick = {
+                    userTouchedEnabled = true
                     enabled = if (track.id in enabled) enabled - track.id else enabled + track.id
                   },
                   label = { Text(track.id.label) },
@@ -431,6 +480,23 @@ fun MultiCamPlayer(
     }
   }
 }
+
+/**
+ * The signature `buildWindows()` actually branches on — each qcamera segment+path, and for each
+ * MERGED camera which of those segments it has on disk. Equal signatures ⇒ an `hdCameras`/`qcamera`
+ * change wouldn't alter the playlist, so the delta effect can skip a player rebuild. That guard is
+ * what stops a failed→resume download flap (which re-runs the ViewModel's `load()` repeatedly) from
+ * churning the player. Pure, so it is unit-tested.
+ */
+internal fun playlistSignature(
+    qcamera: List<QSegment>,
+    mergedCams: List<CameraId>,
+    hdCameras: List<CameraTrack>,
+): List<Any> =
+    qcamera.map { it.segmentNum to it.path } +
+        mergedCams.map { cam ->
+          cam to (hdCameras.firstOrNull { it.id == cam }?.segmentNums?.toSet() ?: emptySet<UInt>())
+        }
 
 /** Default-on camera: road if present, else the first available HD, else none (qcamera preview). */
 private fun defaultEnabled(hdCameras: List<CameraTrack>): Set<CameraId> =

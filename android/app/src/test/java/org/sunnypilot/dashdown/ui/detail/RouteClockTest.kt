@@ -1,6 +1,7 @@
 package org.sunnypilot.dashdown.ui.detail
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -98,5 +99,60 @@ class RouteClockTest {
     // User order had driver, but it was toggled off → it disappears from the result.
     assertEquals(
         listOf(wide, road), orderedVisibleSlots(listOf(road, wide), listOf(driver, wide, road)))
+  }
+
+  // --- playlistSignature: the guard that lets the player update in place instead of rebuilding ---
+
+  private val q01 = listOf(QSegment(0u, "/q0"), QSegment(1u, "/q1"))
+
+  @Test
+  fun playlistSignatureStableForEqualInputs() {
+    val hd = listOf(CameraTrack(CameraId.ROAD, listOf(0u, 1u)))
+    assertEquals(
+        playlistSignature(q01, listOf(CameraId.ROAD), hd),
+        playlistSignature(q01, listOf(CameraId.ROAD), hd))
+  }
+
+  @Test
+  fun playlistSignatureChangesWhenMergedCameraGainsSegment() {
+    // Road is merged and its download frontier advances (seg 1 lands) → the window set changes, so
+    // the player must rebuild to gain road's HD child for seg 1.
+    val before =
+        playlistSignature(
+            q01, listOf(CameraId.ROAD), listOf(CameraTrack(CameraId.ROAD, listOf(0u))))
+    val after =
+        playlistSignature(
+            q01, listOf(CameraId.ROAD), listOf(CameraTrack(CameraId.ROAD, listOf(0u, 1u))))
+    assertNotEquals(before, after)
+  }
+
+  @Test
+  fun playlistSignatureUnchangedWhenUnmergedCameraGainsSegment() {
+    // Wide downloads a segment but the user never enabled it (not merged) → the windows the player
+    // shows are identical, so NO rebuild. This is the guard that stops a download flap from
+    // churning.
+    val merged = listOf(CameraId.ROAD)
+    val before =
+        playlistSignature(
+            q01,
+            merged,
+            listOf(
+                CameraTrack(CameraId.ROAD, listOf(0u, 1u)), CameraTrack(CameraId.WIDE, listOf(0u))))
+    val after =
+        playlistSignature(
+            q01,
+            merged,
+            listOf(
+                CameraTrack(CameraId.ROAD, listOf(0u, 1u)),
+                CameraTrack(CameraId.WIDE, listOf(0u, 1u))))
+    assertEquals(before, after)
+  }
+
+  @Test
+  fun playlistSignatureChangesWhenQcameraGrows() {
+    // A new qcamera segment mirrors → one more window; the player must extend its playlist.
+    val hd = listOf(CameraTrack(CameraId.ROAD, listOf(0u)))
+    val before = playlistSignature(listOf(QSegment(0u, "/q0")), listOf(CameraId.ROAD), hd)
+    assertNotEquals(before, playlistSignature(q01, listOf(CameraId.ROAD), hd))
   }
 }
