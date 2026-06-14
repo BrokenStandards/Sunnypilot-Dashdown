@@ -10,3 +10,12 @@ publish = false
 [workspace.dependencies]
 uniffi = "0.31"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+# Optimize the core (and memchr) even in debug builds. `installDebug` builds the Android `.so` with
+# cargo's dev profile; the in-memory HEVC→MP4 remux runs there, and unoptimized it is ~2x slower
+# (and the SIMD start-code scan needs opt to inline). This keeps fast incremental compiles for the
+# rest of the workspace while giving debug on-device builds release-class remux speed.
+[profile.dev.package.dashdown-core]
+opt-level = 3
+[profile.dev.package.memchr]
+opt-level = 3

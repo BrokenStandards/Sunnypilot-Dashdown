@@ -185,16 +185,13 @@ pub fn hevc_annexb_to_mp4(input: &[u8]) -> Result<Vec<u8>> {
 /// start codes and trimming trailing zero bytes before the next start code.
 fn iter_nals(data: &[u8]) -> Vec<(usize, usize)> {
     let n = data.len();
-    let mut starts = Vec::new();
-    let mut i = 0;
-    while i + 3 <= n {
-        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
-            starts.push(i + 3); // payload begins right after the 00 00 01
-            i += 3;
-        } else {
-            i += 1;
-        }
-    }
+    // Payload starts: the byte after each (non-overlapping) `00 00 01`. memmem is a SIMD search —
+    // ~an order of magnitude faster than a byte-at-a-time scan over a ~37 MB segment, and yields
+    // the identical set of starts (a 4-byte `00 00 00 01` matches `00 00 01` at its last three
+    // bytes; the leading zero is trimmed below as the previous NAL's trailing zero).
+    let starts: Vec<usize> = memchr::memmem::find_iter(data, [0u8, 0, 1].as_slice())
+        .map(|p| p + 3)
+        .collect();
     let mut nals = Vec::with_capacity(starts.len());
     for (k, &s) in starts.iter().enumerate() {
         // The next NAL's payload begins at starts[k+1]; its start code is the 3
@@ -761,6 +758,36 @@ pub(crate) fn minimal_stream() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ad-hoc bench (no-op unless `REMUX_BENCH_FILE` points at a real `.hevc`): times the file read
+    /// vs the Annex-B→MP4 rewrap so we can see where the remux latency goes and the debug↔release
+    /// gap. Run: `REMUX_BENCH_FILE=/tmp/seg.hevc cargo test -p dashdown-core [--release] bench_remux -- --nocapture`.
+    #[test]
+    fn bench_remux() {
+        let Ok(path) = std::env::var("REMUX_BENCH_FILE") else {
+            return;
+        };
+        let t0 = std::time::Instant::now();
+        let input = std::fs::read(&path).unwrap();
+        let t_read = t0.elapsed();
+        // Warm + measure a few iterations of the pure CPU rewrap.
+        let mut out = Vec::new();
+        let t1 = std::time::Instant::now();
+        let iters = 5;
+        for _ in 0..iters {
+            out = hevc_annexb_to_mp4(&input).unwrap();
+        }
+        let t_cpu = t1.elapsed() / iters;
+        eprintln!(
+            "REMUX BENCH: read {} MB in {:?} | rewrap {} MB -> {} MB in {:?} (avg of {} iters)",
+            input.len() / 1_048_576,
+            t_read,
+            input.len() / 1_048_576,
+            out.len() / 1_048_576,
+            t_cpu,
+            iters,
+        );
+    }
 
     /// Find the byte offset of a four-character box/code in the output.
     fn find(data: &[u8], tag: &[u8; 4]) -> Option<usize> {

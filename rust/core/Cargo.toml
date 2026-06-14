@@ -26,6 +26,7 @@ zip = "8.6.0"
 tracing-subscriber = { version = "0.3.23", features = ["registry"] }
 rustls = { version = "0.23.40", default-features = false, features = ["ring", "tls12", "logging", "std"] }
 sha2 = "0.10.9"
+memchr = "2.8.2"
 
 [dev-dependencies]
 mock-copyparty = { path = "../mock-copyparty" }
